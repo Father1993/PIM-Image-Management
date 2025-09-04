@@ -76,7 +76,7 @@ class CompoImageChecker:
                     batch_without_images += 1
                     products_without_images.append({
                         "id": product_id,
-                        "code_1c": product.get("syncUid", ""),
+                        "code_1c": product.get("articul", ""),
                         "header": product.get("header", "")
                     })
             
