@@ -87,7 +87,7 @@ class AsyncSmallImageChecker:
                         batch_small_images += 1
                         products_with_small_images.append({
                             "id": product.get("id"),
-                            "code_1c": product.get("syncUid", ""),
+                            "code_1c": product.get("articul", ""),
                             "header": product.get("header", ""),
                             "small_images": small_images
                         })
