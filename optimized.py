@@ -17,11 +17,11 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # Конфигурация
-PIM_API_URL = "https://pim.uroven.pro/api/v1"
-PIM_LOGIN = os.getenv("PIM_LOGIN", "s.andrey")
-PIM_PASSWORD = os.getenv("PIM_PASSWORD", "KZh-4g2-YFx-Jgm")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://supabase.uroven.pro")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIn0.4AiJtu9AAgqihOClCQBLGLI3ZrqOfcbyp6_035gGHr0")
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 IMGPROXY_URL = "https://images.uroven.pro"
 
 # Инициализация Supabase
