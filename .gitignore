@@ -9,6 +9,7 @@ logs
 .DS_Store
 .cache/
 *.xlsx
+data/__pycache__/
 
 # IDE
 .idea/
