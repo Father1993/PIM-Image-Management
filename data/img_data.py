@@ -218,23 +218,33 @@ async def process_batch(token: str, products_batch: List[Dict[str, str]], batch_
         supabase = get_supabase_client()
         updated_count = 0
         
-        def update_single_record(image_update):
-            """Обновление одной записи"""
-            try:
-                record_id = image_update["id"]
-                update_data = {k: v for k, v in image_update.items() if k != "id"}
-                result = supabase.table("product_images").update(update_data).eq("id", record_id).execute()
-                return 1 if result.data else 0
-            except Exception as e:
-                logger.error(f"Ошибка при обновлении записи {record_id}: {e}")
-                return 0
+        def update_single_record(image_update, retry_count=3):
+            """Обновление одной записи с retry"""
+            import time
+            record_id = image_update["id"]
+            update_data = {k: v for k, v in image_update.items() if k != "id"}
+            
+            for attempt in range(retry_count):
+                try:
+                    result = supabase.table("product_images").update(update_data).eq("id", record_id).execute()
+                    return 1 if result.data else 0
+                except Exception as e:
+                    if attempt == retry_count - 1:
+                        logger.error(f"Ошибка при обновлении записи {record_id} (финальная попытка): {e}")
+                        return 0
+                    # Пауза перед retry
+                    time.sleep(0.2 * (attempt + 1))
+            return 0
         
-        # Обновляем параллельно через thread pool для синхронных операций
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(update_single_record, img) for img in all_images]
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
-            updated_count = sum(results)
+        # Обновляем последовательно с небольшими паузами для стабильности
+        updated_count = 0
+        for i, image_update in enumerate(all_images):
+            result = update_single_record(image_update)
+            updated_count += result
+            # Небольшая пауза каждые 10 запросов
+            if i % 10 == 9:
+                import time
+                time.sleep(0.1)
         
         logger.info(f"Партия {batch_num}: обновлено {updated_count} записей")
         return updated_count
