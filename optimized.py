@@ -155,41 +155,40 @@ async def scan_product_images(session, token):
             
         product_data = product_details["data"]
         
-        # Обработка основного изображения
+        # Обработка основного изображения с дополнительными
         main_picture = product_data.get("picture")
         if main_picture and main_picture.get("name"):
+            # Собираем дополнительные изображения
+            additional_pictures = product_data.get("pictures", [])
+            additional_urls = []
+            additional_ids = []
+            
+            for pic in additional_pictures:
+                if pic and pic.get("name"):
+                    ext = pic.get("type", "JPG").split("/")[-1].upper() if pic.get("type") else "JPG"
+                    additional_urls.append(f"https://pim.uroven.pro/pictures/originals/{pic['name']}.{ext}")
+                    if pic.get("id"):
+                        additional_ids.append(str(pic.get("id")))
+            
+            # Создаем одну запись с основным и дополнительными изображениями
+            ext = main_picture.get("type", "JPG").split("/")[-1].upper() if main_picture.get("type") else "JPG"
             image_data = {
                 'product_id': product_id,
                 'product_code_1c': code_1c,
-                'image_name': main_picture["name"],
-                'image_url': f"https://pim.uroven.pro/pictures/originals/{main_picture['name']}.JPG",
+                'image_name': f"{main_picture['name']}.{ext}",
+                'image_url': f"https://pim.uroven.pro/pictures/originals/{main_picture['name']}.{ext}",
                 'image_type': 'main',
-                'picture_id': str(main_picture.get("id", ""))
+                'picture_id': str(main_picture.get("id", "")),
+                'additional_image_urls': ",".join(additional_urls) if additional_urls else None,
+                'additional_picture_ids': ",".join(additional_ids) if additional_ids else None
             }
             
             try:
                 supabase.table('product_images').upsert(image_data).execute()
                 scanned_count += 1
+                logger.info(f"Товар {product_id}: основное изображение и {len(additional_urls)} дополнительных")
             except Exception as e:
-                logger.error(f"Ошибка при сохранении основного изображения: {str(e)}")
-        
-        # Обработка дополнительных изображений
-        for picture in product_data.get("pictures", []):
-            if picture and picture.get("name"):
-                image_data = {
-                    'product_id': product_id,
-                    'product_code_1c': code_1c,
-                    'image_name': picture["name"],
-                    'image_url': f"https://pim.uroven.pro/pictures/originals/{picture['name']}.JPG",
-                    'image_type': 'additional',
-                    'picture_id': str(picture.get("id", ""))
-                }
-                
-                try:
-                    supabase.table('product_images').upsert(image_data).execute()
-                    scanned_count += 1
-                except Exception as e:
-                    logger.error(f"Ошибка при сохранении дополнительного изображения: {str(e)}")
+                logger.error(f"Ошибка при сохранении изображения: {str(e)}")
     
     logger.info(f"Сканирование завершено. Найдено {scanned_count} изображений")
     return scanned_count
@@ -358,10 +357,12 @@ async def preview_images(session, token):
                             image_data = {
                                 'product_id': product_id,
                                 'product_code_1c': product.get('code_1c', ''),
-                                'image_name': main_picture["name"],
+                                'image_name': main_picture["name"] + ".JPG",
                                 'image_url': image_url,
                                 'image_type': 'main',
-                                'picture_id': str(main_picture.get("id", ""))
+                                'picture_id': str(main_picture.get("id", "")),
+                                'additional_image_urls': None,
+                                'additional_picture_ids': None
                             }
                             supabase.table('product_images').upsert(image_data).execute()
                             scanned_count += 1

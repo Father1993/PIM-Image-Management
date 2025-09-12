@@ -116,18 +116,38 @@ def get_products_from_supabase(max_products: Optional[int] = None) -> List[Dict[
     logger.info(f"Получено {len(products)} товаров из Supabase")
     return products
 
-def create_image_object(product_id: str, product_code_1c: str, picture: Dict[str, Any], image_type: str) -> Dict[str, Any]:
-    """Создание объекта изображения"""
+def create_image_url(picture: Dict[str, Any]) -> str:
+    """Создание URL изображения"""
     ext = extract_file_extension(picture.get("type"))
     image_name = f"{picture['name']}.{ext}"
+    return f"{Config.PIM_BASE_URL}{image_name}"
+
+def create_image_object(product_id: str, product_code_1c: str, main_picture: Dict[str, Any], additional_pictures: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Создание объекта изображения с основным и дополнительными изображениями"""
+    # Основное изображение
+    ext = extract_file_extension(main_picture.get("type"))
+    image_name = f"{main_picture['name']}.{ext}"
+    main_image_url = f"{Config.PIM_BASE_URL}{image_name}"
+    
+    # Дополнительные изображения
+    additional_image_urls = []
+    additional_picture_ids = []
+    if additional_pictures:
+        for pic in additional_pictures:
+            if pic and pic.get("name"):
+                additional_image_urls.append(create_image_url(pic))
+                if pic.get("id"):
+                    additional_picture_ids.append(str(pic.get("id")))
     
     return {
         "product_id": product_id,
         "product_code_1c": product_code_1c,
         "image_name": image_name,
-        "image_url": f"{Config.PIM_BASE_URL}{image_name}",
-        "image_type": image_type,
-        "picture_id": picture.get("id"),
+        "image_url": main_image_url,
+        "image_type": "main",  # Всегда основное изображение
+        "additional_image_urls": ",".join(additional_image_urls) if additional_image_urls else None,
+        "additional_picture_ids": ",".join(additional_picture_ids) if additional_picture_ids else None,
+        "picture_id": main_picture.get("id"),
         "is_downloaded": False,
         "is_optimized": False,
         "is_uploaded": False,
@@ -153,22 +173,21 @@ async def get_product_images(session: aiohttp.ClientSession, token: str, product
                 return []
             
             product_data = data["data"]
-            images = []
+            result = []
             
             # Основное изображение
-            picture = product_data.get("picture")
-            if picture and picture.get("name"):
-                images.append(create_image_object(product_id, product_code_1c, picture, "main"))
+            main_picture = product_data.get("picture")
+            if main_picture and main_picture.get("name"):
+                # Получаем дополнительные изображения
+                additional_pictures = [pic for pic in product_data.get("pictures", []) if pic and pic.get("name")]
+                
+                # Создаем один объект с основным и дополнительными изображениями
+                image_obj = create_image_object(product_id, product_code_1c, main_picture, additional_pictures)
+                result.append(image_obj)
+                
+                logger.info(f"Товар {product_id}: основное изображение и {len(additional_pictures)} дополнительных")
             
-            # Дополнительные изображения
-            for pic in product_data.get("pictures", []):
-                if pic and pic.get("name"):
-                    images.append(create_image_object(product_id, product_code_1c, pic, "additional"))
-            
-            if images:
-                logger.info(f"Товар {product_id}: найдено {len(images)} изображений")
-            
-            return images
+            return result
     
     try:
         return await retry_with_backoff(get_images)
@@ -203,10 +222,24 @@ async def process_batch(token: str, products_batch: List[Dict[str, str]], batch_
         for i in range(0, len(all_images), Config.BATCH_SIZE):
             try:
                 batch_slice = all_images[i:i + Config.BATCH_SIZE]
-                result = supabase.table("product_images").upsert(
-                    batch_slice, 
-                    on_conflict="product_id,image_name"
-                ).execute()
+                # Пробуем разные варианты upsert
+                try:
+                    # Сначала пробуем с product_id,image_name
+                    result = supabase.table("product_images").upsert(
+                        batch_slice,
+                        on_conflict="product_id,image_name"
+                    ).execute()
+                except Exception as conflict_error:
+                    try:
+                        # Если не работает, пробуем только product_id
+                        result = supabase.table("product_images").upsert(
+                            batch_slice,
+                            on_conflict="product_id"
+                        ).execute()
+                    except Exception as second_error:
+                        logger.warning(f"Upsert с on_conflict не работает, используем простой upsert: {second_error}")
+                        result = supabase.table("product_images").upsert(batch_slice).execute()
+                
                 saved_count += len(result.data) if result.data else 0
             except Exception as e:
                 logger.error(f"Ошибка при сохранении части изображений: {e}")
