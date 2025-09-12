@@ -260,9 +260,9 @@ async def main(batch_size: int = 20, max_products: Optional[int] = None, max_con
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Получение данных об изображениях товаров")
-    parser.add_argument("--batch-size", type=int, default=20, help="Размер партии товаров")
+    parser.add_argument("--batch-size", type=int, default=100, help="Размер партии товаров")
     parser.add_argument("--max-products", type=int, default=None, help="Максимальное количество товаров")
-    parser.add_argument("--max-concurrent", type=int, default=3, help="Максимальное количество одновременных партий")
+    parser.add_argument("--max-concurrent", type=int, default=4, help="Максимальное количество одновременных партий")
     args = parser.parse_args()
     
     asyncio.run(main(
