@@ -36,14 +36,33 @@ async def authorize_pim():
 
 def get_products_from_supabase(max_products=None):
     """Получение списка товаров из Supabase"""
-    query = supabase.table('product_backup').select('id, code_1c')
+    # Получаем данные из product_images вместо product_backup
+    query = supabase.table('product_images').select('product_id, product_code_1c')
     if max_products:
-        query = query.limit(max_products)
+        # Получаем больше записей, так как будем фильтровать дубликаты
+        query = query.limit(max_products * 2)
     
     response = query.execute()
     if response.data:
-        logger.info(f"Получено {len(response.data)} товаров из Supabase")
-        return response.data
+        # Используем словарь для удаления дубликатов по product_id
+        unique_products = {}
+        for item in response.data:
+            product_id = item.get("product_id")
+            if product_id and product_id not in unique_products:
+                unique_products[product_id] = {
+                    "id": product_id,
+                    "code_1c": item.get("product_code_1c", "")
+                }
+        
+        # Преобразуем словарь в список
+        products = list(unique_products.values())
+        
+        # Ограничиваем количество, если нужно
+        if max_products and len(products) > max_products:
+            products = products[:max_products]
+            
+        logger.info(f"Получено {len(products)} товаров из Supabase")
+        return products
     
     logger.warning("Товары не найдены в Supabase")
     return []
@@ -74,11 +93,23 @@ async def get_product_images(session, token, product):
             # Основное изображение
             picture = product_data.get("picture")
             if picture and picture.get("name"):
+                # Обработка типа изображения с корректным извлечением расширения
+                img_type = picture.get("type", "JPG")
+                # Обработка различных форматов типа (например, "image/jpeg" или "JPEG")
+                if img_type:
+                    if "/" in img_type:
+                        # Обработка MIME-типа (например, "image/jpeg")
+                        ext = img_type.split("/")[-1].lower()
+                    else:
+                        # Обработка обычного типа (например, "JPEG" или "PNG")
+                        ext = img_type.upper()
+                else:
+                    ext = "JPG"
                 images.append({
                     "product_id": product_id,
                     "product_code_1c": product_code_1c,
-                    "image_name": f"{picture['name']}.JPG",
-                    "image_url": f"{base_url}{picture['name']}.JPG",
+                    "image_name": f"{picture['name']}.{ext}",
+                    "image_url": f"{base_url}{picture['name']}.{ext}",
                     "image_type": "main",
                     "picture_id": picture.get("id"),
                     "is_downloaded": False,
@@ -90,11 +121,23 @@ async def get_product_images(session, token, product):
             # Дополнительные изображения
             for pic in product_data.get("pictures", []):
                 if pic and pic.get("name"):
+                    # Обработка типа изображения с корректным извлечением расширения
+                    img_type = pic.get("type", "JPG")
+                    # Обработка различных форматов типа (например, "image/jpeg" или "JPEG")
+                    if img_type:
+                        if "/" in img_type:
+                            # Обработка MIME-типа (например, "image/jpeg")
+                            ext = img_type.split("/")[-1].lower()
+                        else:
+                            # Обработка обычного типа (например, "JPEG" или "PNG")
+                            ext = img_type.upper()
+                    else:
+                        ext = "JPG"
                     images.append({
                         "product_id": product_id,
                         "product_code_1c": product_code_1c,
-                        "image_name": f"{pic['name']}.JPG",
-                        "image_url": f"{base_url}{pic['name']}.JPG",
+                        "image_name": f"{pic['name']}.{ext}",
+                        "image_url": f"{base_url}{pic['name']}.{ext}",
                         "image_type": "additional",
                         "picture_id": pic.get("id"),
                         "is_downloaded": False,
@@ -130,12 +173,18 @@ async def process_batch(token, products_batch, batch_num):
         # Сохранение в Supabase
         if all_images:
             try:
-                # Сохраняем партиями по 100 записей
+                # Сохраняем партиями по 100 записей с upsert
                 saved_count = 0
                 for i in range(0, len(all_images), 100):
-                    batch_slice = all_images[i:i + 100]
-                    result = supabase.table("product_images").insert(batch_slice).execute()
-                    saved_count += len(result.data) if result.data else 0
+                    try:
+                        batch_slice = all_images[i:i + 100]
+                        # Используем upsert вместо insert для предотвращения ошибок с дубликатами
+                        result = supabase.table("product_images").upsert(batch_slice).execute()
+                        saved_count += len(result.data) if result.data else 0
+                    except Exception as e:
+                        logger.error(f"Ошибка при сохранении части изображений: {e}")
+                        # Продолжаем с следующей партией даже при ошибке
+                        continue
                 
                 logger.info(f"Партия {batch_num}: сохранено {saved_count} изображений")
                 return saved_count
