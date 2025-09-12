@@ -18,7 +18,7 @@ class Config:
     CONNECT_TIMEOUT = 10
     RETRY_TIMEOUT = 60
     RETRY_CONNECT_TIMEOUT = 15
-    RETRY_DELAY = 0.5
+    RETRY_DELAY = 0.1
     PIM_BASE_URL = "https://pim.uroven.pro/pictures/originals/"
     DEFAULT_EXT = "JPG"
 
@@ -85,35 +85,33 @@ async def authorize_pim(config: Dict[str, str]) -> str:
     return await retry_with_backoff(auth_request)
 
 def get_products_from_supabase(max_products: Optional[int] = None) -> List[Dict[str, str]]:
-    """Получение списка товаров из Supabase"""
+    """Получение всех товаров из Supabase для полного обновления"""
     supabase = get_supabase_client()
-    query = supabase.table('product_images').select('product_id, product_code_1c')
+    # Получаем ВСЕ записи без фильтров
+    query = supabase.table('product_images').select('product_id, product_code_1c, id, image_type')
     
     if max_products:
-        query = query.limit(max_products * 2)
+        query = query.limit(max_products)
     
     response = query.execute()
     if not response.data:
         logger.warning("Товары не найдены в Supabase")
         return []
     
-    # Удаляем дубликаты по product_id
-    unique_products = {}
+    # Преобразуем в нужный формат, берем уникальные товары
+    products = []
+    seen_products = set()
     for item in response.data:
         product_id = item.get("product_id")
-        if product_id and product_id not in unique_products:
-            unique_products[product_id] = {
+        if product_id not in seen_products:
+            products.append({
                 "id": product_id,
-                "code_1c": item.get("product_code_1c", "")
-            }
-    
-    products = list(unique_products.values())
-    
-    # Ограничиваем количество, если нужно
-    if max_products and len(products) > max_products:
-        products = products[:max_products]
+                "code_1c": item.get("product_code_1c", ""),
+                "record_id": item.get("id")  # ID записи в таблице для обновления
+            })
+            seen_products.add(product_id)
         
-    logger.info(f"Получено {len(products)} товаров из Supabase")
+    logger.info(f"Получено {len(products)} товаров для полного обновления из Supabase")
     return products
 
 def create_image_url(picture: Dict[str, Any]) -> str:
@@ -122,12 +120,21 @@ def create_image_url(picture: Dict[str, Any]) -> str:
     image_name = f"{picture['name']}.{ext}"
     return f"{Config.PIM_BASE_URL}{image_name}"
 
-def create_image_object(product_id: str, product_code_1c: str, main_picture: Dict[str, Any], additional_pictures: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Создание объекта изображения с основным и дополнительными изображениями"""
+def create_update_object(record_id: int, main_picture: Dict[str, Any] = None, additional_pictures: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Создание объекта для полного обновления записи с основным и дополнительными изображениями"""
+    update_data = {"id": record_id}
+    
     # Основное изображение
-    ext = extract_file_extension(main_picture.get("type"))
-    image_name = f"{main_picture['name']}.{ext}"
-    main_image_url = f"{Config.PIM_BASE_URL}{image_name}"
+    if main_picture and main_picture.get("name"):
+        ext = extract_file_extension(main_picture.get("type"))
+        image_name = f"{main_picture['name']}.{ext}"
+        main_image_url = f"{Config.PIM_BASE_URL}{image_name}"
+        
+        update_data.update({
+            "image_name": image_name,
+            "image_url": main_image_url,
+            "picture_id": str(main_picture.get("id", ""))
+        })
     
     # Дополнительные изображения
     additional_image_urls = []
@@ -139,25 +146,17 @@ def create_image_object(product_id: str, product_code_1c: str, main_picture: Dic
                 if pic.get("id"):
                     additional_picture_ids.append(str(pic.get("id")))
     
-    return {
-        "product_id": product_id,
-        "product_code_1c": product_code_1c,
-        "image_name": image_name,
-        "image_url": main_image_url,
-        "image_type": "main",  # Всегда основное изображение
+    update_data.update({
         "additional_image_urls": ",".join(additional_image_urls) if additional_image_urls else None,
-        "additional_picture_ids": ",".join(additional_picture_ids) if additional_picture_ids else None,
-        "picture_id": main_picture.get("id"),
-        "is_downloaded": False,
-        "is_optimized": False,
-        "is_uploaded": False,
-        "optimized_url": None
-    }
+        "additional_picture_ids": ",".join(additional_picture_ids) if additional_picture_ids else None
+    })
+    
+    return update_data
 
 async def get_product_images(session: aiohttp.ClientSession, token: str, product: Dict[str, str], config: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Получение изображений товара из PIM API"""
+    """Получение всех изображений товара из PIM API для полного обновления"""
     product_id = product['id']
-    product_code_1c = product.get('code_1c', '')
+    record_id = product.get('record_id')
     headers = {"Authorization": f"Bearer {token}"}
     url = f"{config['PIM_API_URL']}/product/{product_id}"
     
@@ -177,15 +176,16 @@ async def get_product_images(session: aiohttp.ClientSession, token: str, product
             
             # Основное изображение
             main_picture = product_data.get("picture")
-            if main_picture and main_picture.get("name"):
-                # Получаем дополнительные изображения
-                additional_pictures = [pic for pic in product_data.get("pictures", []) if pic and pic.get("name")]
-                
-                # Создаем один объект с основным и дополнительными изображениями
-                image_obj = create_image_object(product_id, product_code_1c, main_picture, additional_pictures)
-                result.append(image_obj)
-                
-                logger.info(f"Товар {product_id}: основное изображение и {len(additional_pictures)} дополнительных")
+            
+            # Дополнительные изображения
+            additional_pictures = [pic for pic in product_data.get("pictures", []) if pic and pic.get("name")]
+            
+            # Создаем объект для полного обновления записи
+            update_obj = create_update_object(record_id, main_picture, additional_pictures)
+            result.append(update_obj)
+            
+            main_info = "есть основное" if main_picture and main_picture.get("name") else "НЕТ основного"
+            logger.info(f"Товар {product_id}: {main_info}, {len(additional_pictures)} дополнительных изображений")
             
             return result
     
@@ -214,41 +214,32 @@ async def process_batch(token: str, products_batch: List[Dict[str, str]], batch_
         if not all_images:
             return 0
         
-        # Сохранение в Supabase
+        # Параллельное обновление записей в Supabase
         supabase = get_supabase_client()
-        saved_count = 0
+        updated_count = 0
         
-        # Сохраняем партиями по 100 записей с upsert
-        for i in range(0, len(all_images), Config.BATCH_SIZE):
+        def update_single_record(image_update):
+            """Обновление одной записи"""
             try:
-                batch_slice = all_images[i:i + Config.BATCH_SIZE]
-                # Пробуем разные варианты upsert
-                try:
-                    # Сначала пробуем с product_id,image_name
-                    result = supabase.table("product_images").upsert(
-                        batch_slice,
-                        on_conflict="product_id,image_name"
-                    ).execute()
-                except Exception as conflict_error:
-                    try:
-                        # Если не работает, пробуем только product_id
-                        result = supabase.table("product_images").upsert(
-                            batch_slice,
-                            on_conflict="product_id"
-                        ).execute()
-                    except Exception as second_error:
-                        logger.warning(f"Upsert с on_conflict не работает, используем простой upsert: {second_error}")
-                        result = supabase.table("product_images").upsert(batch_slice).execute()
-                
-                saved_count += len(result.data) if result.data else 0
+                record_id = image_update["id"]
+                update_data = {k: v for k, v in image_update.items() if k != "id"}
+                result = supabase.table("product_images").update(update_data).eq("id", record_id).execute()
+                return 1 if result.data else 0
             except Exception as e:
-                logger.error(f"Ошибка при сохранении части изображений: {e}")
-                continue
+                logger.error(f"Ошибка при обновлении записи {record_id}: {e}")
+                return 0
         
-        logger.info(f"Партия {batch_num}: сохранено {saved_count} изображений")
-        return saved_count
+        # Обновляем параллельно через thread pool для синхронных операций
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(update_single_record, img) for img in all_images]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            updated_count = sum(results)
+        
+        logger.info(f"Партия {batch_num}: обновлено {updated_count} записей")
+        return updated_count
 
-async def main(batch_size: int = 20, max_products: Optional[int] = None, max_concurrent: int = 3) -> None:
+async def main(batch_size: int = 100, max_products: Optional[int] = None, max_concurrent: int = 3) -> None:
     """Основная функция"""
     try:
         # Загружаем конфигурацию
@@ -276,7 +267,7 @@ async def main(batch_size: int = 20, max_products: Optional[int] = None, max_con
             async def process_batch_with_limit(batch_data, batch_number):
                 async with semaphore:
                     result = await process_batch(token, batch_data, batch_number, config)
-                    await asyncio.sleep(Config.RETRY_DELAY)
+                    await asyncio.sleep(0.05)  # Минимальная пауза
                     return result
             
             tasks.append(process_batch_with_limit(batch, batch_num))
@@ -285,7 +276,7 @@ async def main(batch_size: int = 20, max_products: Optional[int] = None, max_con
         results = await asyncio.gather(*tasks)
         total_saved = sum(results)
         
-        logger.info(f"Завершено! Обработано {len(products)} товаров, сохранено {total_saved} изображений")
+        logger.info(f"Завершено! Обработано {len(products)} товаров, обновлено {total_saved} записей")
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -293,9 +284,9 @@ async def main(batch_size: int = 20, max_products: Optional[int] = None, max_con
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Получение данных об изображениях товаров")
-    parser.add_argument("--batch-size", type=int, default=100, help="Размер партии товаров")
+    parser.add_argument("--batch-size", type=int, default=100, help="Размер партии товаров") 
     parser.add_argument("--max-products", type=int, default=None, help="Максимальное количество товаров")
-    parser.add_argument("--max-concurrent", type=int, default=4, help="Максимальное количество одновременных партий")
+    parser.add_argument("--max-concurrent", type=int, default=3, help="Максимальное количество одновременных партий")
     args = parser.parse_args()
     
     asyncio.run(main(
