@@ -3,7 +3,7 @@
 """
 АСИНХРОННЫЙ скрипт для выявления товаров с изображениями шириной более 750px
 """
-
+import os
 import requests
 import asyncio
 import aiohttp
@@ -15,11 +15,18 @@ from PIL import Image
 from io import BytesIO
 import logging
 
+# Конфигурация
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
+PIM_IMAGE_URL = os.getenv("PIM_IMAGE_URL")
+auth_data = {"login": PIM_LOGIN, "password": PIM_PASSWORD, "remember": True}
+
 
 class AsyncBigImageChecker:
     def __init__(self):
         self.token = None
-        self.base_url = "https://pim.uroven.pro/api/v1"
+        self.base_url = PIM_API_URL
         self.headers = {"Content-Type": "application/json"}
         self.image_cache = {}
         logging.basicConfig(
@@ -30,7 +37,7 @@ class AsyncBigImageChecker:
         """Получение токена авторизации (синхронно)"""
         response = requests.post(
             f"{self.base_url}/sign-in/",
-            json={"login": "s.andrey", "password": "KZh-4g2-YFx-Jgm", "remember": True},
+            json=auth_data,
             headers=self.headers,
         )
         response.raise_for_status()
@@ -141,7 +148,7 @@ class AsyncBigImageChecker:
             return None
 
         try:
-            image_url = f"https://pim.uroven.pro/pictures/originals/{image_name}"
+            image_url = f"{PIM_IMAGE_URL}/{image_name}"
             headers = {"Range": "bytes=0-2047"}
 
             async with session.get(image_url, headers=headers) as response:

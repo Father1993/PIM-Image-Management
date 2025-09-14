@@ -4,6 +4,7 @@
 АСИНХРОННЫЙ скрипт для выявления товаров без изображений в Compo PIM API
 """
 
+import os
 import requests
 import asyncio
 import aiohttp
@@ -13,17 +14,24 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 
+# Конфигурация
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
+auth_data = {"login": PIM_LOGIN, "password": PIM_PASSWORD, "remember": True}
+
+
 class AsyncCompoImageChecker:
     def __init__(self):
         self.token = None
-        self.base_url = "https://pim.uroven.pro/api/v1"
+        self.base_url = PIM_API_URL
         self.headers = {"Content-Type": "application/json"}
 
     def authenticate(self):
         """Получение токена авторизации"""
         response = requests.post(
             f"{self.base_url}/sign-in/",
-            json={"login": "s.andrey", "password": "KZh-4g2-YFx-Jgm", "remember": True},
+            json=auth_data,
             headers=self.headers,
         )
         response.raise_for_status()

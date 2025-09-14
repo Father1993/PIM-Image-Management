@@ -16,7 +16,7 @@ PIM_LOGIN = os.getenv("PIM_LOGIN")
 PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-IMGPROXY_URL = "https://images.uroven.pro"
+IMGPROXY_URL = os.getenv("IMGPROXY_URL")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
