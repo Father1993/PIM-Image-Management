@@ -22,7 +22,6 @@ class Config:
     RETRY_TIMEOUT = 60
     RETRY_CONNECT_TIMEOUT = 15
     RETRY_DELAY = 0.1
-    PIM_BASE_URL = "https://pim.uroven.pro/pictures/originals/"
     DEFAULT_EXT = "JPG"
 
 
@@ -36,6 +35,7 @@ def load_config() -> Dict[str, str]:
         "PIM_PASSWORD",
         "SUPABASE_URL",
         "SUPABASE_KEY",
+        "PIM_BASE_URL",
     ]
     config = {}
 
