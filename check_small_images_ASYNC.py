@@ -16,11 +16,26 @@ from PIL import Image
 from io import BytesIO
 import logging
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 # Конфигурация
 PIM_API_URL = os.getenv("PIM_API_URL")
 PIM_LOGIN = os.getenv("PIM_LOGIN")
 PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 PIM_IMAGE_URL = os.getenv("PIM_IMAGE_URL")
+
+# Проверяем наличие всех необходимых переменных окружения
+required_vars = {
+    "PIM_API_URL": PIM_API_URL,
+    "PIM_LOGIN": PIM_LOGIN,
+    "PIM_PASSWORD": PIM_PASSWORD,
+    "PIM_IMAGE_URL": PIM_IMAGE_URL,
+}
 auth_data = {"login": PIM_LOGIN, "password": PIM_PASSWORD, "remember": True}
 
 

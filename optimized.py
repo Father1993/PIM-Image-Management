@@ -10,6 +10,13 @@ from supabase import create_client
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger()
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 # Конфигурация
 PIM_API_URL = os.getenv("PIM_API_URL")
 PIM_LOGIN = os.getenv("PIM_LOGIN")

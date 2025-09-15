@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АСИНХРОННЫЙ скрипт для выявления товаров с изображениями шириной более 750px
+АСИНХРОННЫЙ скрипт для выявления товаров с изображениями шириной более 1500px
 """
 import os
 import requests
@@ -14,6 +14,13 @@ from openpyxl.utils import get_column_letter
 from PIL import Image
 from io import BytesIO
 import logging
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 # Конфигурация
 PIM_API_URL = os.getenv("PIM_API_URL")
@@ -45,7 +52,7 @@ class AsyncBigImageChecker:
         self.headers["Authorization"] = f"Bearer {self.token}"
 
     async def get_products_with_big_images(self):
-        """Получение товаров с изображениями шириной более 750px"""
+        """Получение товаров с изображениями шириной более 1500px"""
         scroll_id = None
         products_with_big_images = []
         batch_num = 0
@@ -143,7 +150,7 @@ class AsyncBigImageChecker:
         """Асинхронное получение размера изображения"""
         if image_name in self.image_cache:
             width, height = self.image_cache[image_name]
-            if width and width > 750:
+            if width and width > 1500:
                 return f"{img_type}: {image_name} ({width}px)"
             return None
 
@@ -158,7 +165,7 @@ class AsyncBigImageChecker:
                     width, height = image.width, image.height
                     self.image_cache[image_name] = (width, height)
 
-                    if width > 750:
+                    if width > 1500:
                         return f"{img_type}: {image_name} ({width}px)"
 
         except Exception:
@@ -243,7 +250,7 @@ async def main_async():
         print("🚀 Асинхронная проверка размеров изображений...")
         products = await checker.get_products_with_big_images()
 
-        print(f"\n📊 Итого найдено: {len(products)} товаров с изображениями > 750px")
+        print(f"\n📊 Итого найдено: {len(products)} товаров с изображениями > 1500px")
         print(f"💾 Кэш изображений: {len(checker.image_cache)} уникальных файлов")
 
         if products:
