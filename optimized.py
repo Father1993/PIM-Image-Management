@@ -62,42 +62,6 @@ async def optimize_image(session, image_url):
         return None, None
 
 
-async def upload_to_pim(session, token, product_id, image_data):
-    """Загрузка изображения в PIM"""
-    headers = {"Authorization": f"Bearer {token}"}
-    form_data = aiohttp.FormData()
-    form_data.add_field(
-        "file",
-        image_data,
-        filename=f'opt_{datetime.now().strftime("%Y%m%d%H%M%S")}.jpg',
-        content_type="image/jpeg",
-    )
-
-    try:
-        async with session.post(
-            f"{PIM_API_URL}/product/{product_id}/upload-picture",
-            headers=headers,
-            data=form_data,
-        ) as response:
-            return response.status == 200
-    except Exception as e:
-        logger.error(f"Ошибка загрузки: {e}")
-        return False
-
-
-async def delete_from_pim(session, token, product_id, picture_id):
-    """Удаление изображения из PIM"""
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        async with session.delete(
-            f"{PIM_API_URL}/product/{product_id}/picture/{picture_id}", headers=headers
-        ) as response:
-            return response.status == 200
-    except Exception as e:
-        logger.error(f"Ошибка удаления: {e}")
-        return False
-
-
 async def process_image(session, token, image_record):
     """Обработка одного изображения: оптимизация -> загрузка -> удаление старого"""
     image_id = image_record["id"]
