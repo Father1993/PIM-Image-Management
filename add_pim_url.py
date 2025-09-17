@@ -50,22 +50,45 @@ async def get_pim_product(session, product_id, token):
     return None
 
 
+async def update_supabase_products(client, table_name, products_with_links):
+    """Обновить товары в Supabase с полученными ссылками"""
+    updated_count = 0
+
+    # Обновляем пакетами по 100 товаров
+    for i in range(0, len(products_with_links), 100):
+        batch = products_with_links[i : i + 100]
+
+        # Создаем асинхронные задачи для параллельного обновления
+        async def update_product(product):
+            try:
+                client.table(table_name).update({"link_pim": product["link"]}).eq(
+                    "id", product["id"]
+                ).execute()
+                return True
+            except Exception as e:
+                print(f"Ошибка обновления товара {product['id']}: {e}")
+                return False
+
+        # Выполняем обновления параллельно (по 20 штук чтобы не перегружать сервер)
+        tasks = []
+        for j in range(0, len(batch), 20):
+            mini_batch = batch[j : j + 20]
+            mini_tasks = [update_product(product) for product in mini_batch]
+            mini_results = await asyncio.gather(*mini_tasks, return_exceptions=True)
+            updated_count += sum(1 for result in mini_results if result is True)
+
+        print(
+            f"Обновлено {min(i+100, updated_count)}/{len(products_with_links)} товаров"
+        )
+
+    return updated_count
+
+
 async def main():
     # Подключение к Supabase
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Загрузка Excel файла
-    df = pd.read_excel("no-size.xlsx")
-    print(f"Загружено {len(df)} товаров")
-
-    # Получение всех product_id из файла (только числовые значения)
-    product_ids = (
-        df[pd.to_numeric(df["ID товара"], errors="coerce").notna()]["ID товара"]
-        .astype(int)
-        .tolist()
-    )
-
-    # Попробуем разные названия таблиц
+    # Определяем название таблицы
     table_names = ["product", "products", "Product", "Products"]
     table_found = None
 
@@ -82,28 +105,26 @@ async def main():
         print("Таблица не найдена! Проверьте название таблицы в Supabase")
         return
 
-    # Получение ссылок порциями (по 100 ID)
-    links_dict = {}
-    for i in range(0, len(product_ids), 100):
-        batch = product_ids[i : i + 100]
-        response = (
-            client.table(table_found).select("id, link_pim").in_("id", batch).execute()
-        )
-        links_dict.update({item["id"]: item["link_pim"] for item in response.data})
-        print(f"Обработано {min(i+100, len(product_ids))}/{len(product_ids)} товаров")
+    # Получаем товары без link_pim
+    print("Получаем товары без ссылок из Supabase...")
+    response = client.table(table_found).select("id").is_("link_pim", "null").execute()
 
-    # Добавление колонки со ссылками
-    df["Ссылка на товар"] = df["ID товара"].map(links_dict)
+    if not response.data:
+        print("Все товары в Supabase уже имеют ссылки!")
+        return
 
-    # Получение недостающих ссылок через PIM API (только числовые ID)
-    numeric_mask = pd.to_numeric(df["ID товара"], errors="coerce").notna()
-    missing_mask = df["Ссылка на товар"].isna() & numeric_mask
-    missing_ids = df[missing_mask]["ID товара"].astype(int).tolist()
+    # Получаем ID товаров без ссылок
+    missing_ids = [item["id"] for item in response.data]
+    print(f"Найдено {len(missing_ids)} товаров без ссылок в Supabase")
 
+    # Сохраняем ID товаров в файл для архива
+    with open("products_without_links.txt", "w") as f:
+        f.write("\n".join(map(str, missing_ids)))
+    print(f"Список ID товаров сохранен в products_without_links.txt")
+
+    # Получаем ссылки через PIM API
     if missing_ids:
-        print(
-            f"Получаем недостающие ссылки для {len(missing_ids)} товаров через PIM API..."
-        )
+        print(f"Получаем ссылки для {len(missing_ids)} товаров через PIM API...")
 
         async with aiohttp.ClientSession() as session:
             # Получаем токен авторизации
@@ -112,29 +133,42 @@ async def main():
                 print("Не удалось получить токен авторизации PIM API")
                 return
 
-            # Получаем ссылки для товаров
-            tasks = [
-                get_pim_product(session, product_id, token)
-                for product_id in missing_ids
-            ]
-            pim_links = await asyncio.gather(*tasks)
+            # Получаем ссылки для товаров с ограничением одновременных запросов
+            # Используем пакетную обработку для снижения нагрузки
+            pim_links = []
+            for i in range(0, len(missing_ids), 50):
+                batch = missing_ids[i : i + 50]
+                batch_tasks = [
+                    get_pim_product(session, product_id, token) for product_id in batch
+                ]
+                batch_results = await asyncio.gather(*batch_tasks)
+                pim_links.extend(batch_results)
+                print(
+                    f"Получены ссылки для {i+len(batch)} из {len(missing_ids)} товаров"
+                )
 
-        # Обновляем DataFrame недостающими ссылками
-        pim_links_dict = {
-            missing_ids[i]: link for i, link in enumerate(pim_links) if link
-        }
-        df.loc[df["ID товара"].isin(pim_links_dict.keys()), "Ссылка на товар"] = df.loc[
-            df["ID товара"].isin(pim_links_dict.keys()), "ID товара"
-        ].map(pim_links_dict)
+        # Формируем список товаров с полученными ссылками
+        products_with_links = [
+            {"id": missing_ids[i], "link": link}
+            for i, link in enumerate(pim_links)
+            if link
+        ]
 
-        print(f"Получено {len(pim_links_dict)} дополнительных ссылок из PIM API")
+        print(f"Получено {len(products_with_links)} ссылок из PIM API")
 
-    # Сохранение обновленного файла
-    output_file = "no-size-updated.xlsx"
-    df.to_excel(output_file, index=False)
-    total_links = len([x for x in df["Ссылка на товар"] if x])
-    print(f"Итого добавлено {total_links} ссылок")
-    print(f"Результат сохранен в {output_file}")
+        # Обновляем товары в Supabase
+        if products_with_links:
+            updated_count = await update_supabase_products(
+                client, table_found, products_with_links
+            )
+            print(f"Итого обновлено {updated_count} товаров в Supabase")
+
+            # Проверяем оставшиеся товары без ссылок
+            remaining = len(missing_ids) - updated_count
+            if remaining > 0:
+                print(f"Осталось {remaining} товаров без ссылок")
+        else:
+            print("Не удалось получить ссылки через PIM API")
 
 
 if __name__ == "__main__":
