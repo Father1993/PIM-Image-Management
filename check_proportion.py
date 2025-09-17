@@ -156,10 +156,11 @@ class AsyncProportionImageChecker:
                 # Пропускаем эталонные изображения 750x1000px
                 if width == 750 and height == 1000:
                     return None
-                # Проверяем: высота > ширины (вертикальное изображение)
+                # Проверяем: высота > ширины (вертикальное изображение) И пропорция > 1.5
                 if height > width:
                     proportion = round(height / width, 2)
-                    return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
+                    if proportion > 1.5:
+                        return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
             return None
 
         try:
@@ -176,10 +177,11 @@ class AsyncProportionImageChecker:
                     # Пропускаем эталонные изображения 750x1000px
                     if width == 750 and height == 1000:
                         return None
-                    # Проверяем: высота > ширины (вертикальное изображение)
+                    # Проверяем: высота > ширины (вертикальное изображение) И пропорция > 1.5
                     if height > width:
                         proportion = round(height / width, 2)
-                        return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
+                        if proportion > 1.5:
+                            return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
 
         except Exception:
             pass
