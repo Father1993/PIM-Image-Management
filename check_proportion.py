@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АСИНХРОННЫЙ скрипт для выявления товаров с изображениями с пропорцией 3:4
-(вертикальные изображения, где высота > ширины)
+АСИНХРОННЫЙ скрипт для выявления товаров с эталонными изображениями 750×1000px
 """
 
 import os
@@ -32,7 +31,7 @@ PIM_IMAGE_URL = os.getenv("PIM_IMAGE_URL")
 auth_data = {"login": PIM_LOGIN, "password": PIM_PASSWORD, "remember": True}
 
 
-class AsyncProportionImageChecker:
+class AsyncReferenceImageChecker:
     def __init__(self):
         self.token = None
         self.base_url = PIM_API_URL
@@ -53,10 +52,10 @@ class AsyncProportionImageChecker:
         self.token = response.json()["data"]["access"]["token"]
         self.headers["Authorization"] = f"Bearer {self.token}"
 
-    async def get_products_with_proportion_3_4(self):
-        """Получение товаров с изображениями с пропорцией 3:4 (высота > ширины)"""
+    async def get_products_with_reference_images(self):
+        """Получение товаров с эталонными изображениями 750×1000px"""
         scroll_id = None
-        products_with_proportion_3_4 = []
+        products_with_reference_images = []
         batch_num = 0
         total_processed = 0
 
@@ -99,25 +98,25 @@ class AsyncProportionImageChecker:
 
                 results = await asyncio.gather(*tasks)
 
-                batch_proportion_images = 0
-                for product, proportion_images in zip(current_batch, results):
+                batch_reference_images = 0
+                for product, reference_images in zip(current_batch, results):
                     total_processed += 1
-                    if proportion_images:
-                        batch_proportion_images += 1
-                        products_with_proportion_3_4.append(
+                    if reference_images:
+                        batch_reference_images += 1
+                        products_with_reference_images.append(
                             {
                                 "id": product.get("id"),
                                 "code_1c": product.get("articul", ""),
                                 "header": product.get("header", ""),
-                                "proportion_images": proportion_images,
+                                "reference_images": reference_images,
                             }
                         )
 
                 if (
-                    batch_num % 5 == 0 or batch_proportion_images > 0
+                    batch_num % 5 == 0 or batch_reference_images > 0
                 ):  # Чаще показываем прогресс
                     print(
-                        f"🚀 Пакет {batch_num}: {total_processed}/{total_products} товаров | Найдено: {len(products_with_proportion_3_4)}"
+                        f"🚀 Пакет {batch_num}: {total_processed}/{total_products} товаров | Найдено: {len(products_with_reference_images)}"
                     )
 
                 scroll_id = data.get("scrollId")
@@ -125,7 +124,7 @@ class AsyncProportionImageChecker:
                     print("⛔ Нет scrollId, завершаем...")
                     break
 
-        return products_with_proportion_3_4
+        return products_with_reference_images
 
     async def check_product_images_async(self, session, product):
         """Асинхронная проверка размеров изображений товара"""
@@ -153,14 +152,9 @@ class AsyncProportionImageChecker:
         if image_name in self.image_cache:
             width, height = self.image_cache[image_name]
             if width and height:
-                # Пропускаем эталонные изображения 750x1000px
+                # Проверяем эталонные изображения 750x1000px
                 if width == 750 and height == 1000:
-                    return None
-                # Проверяем: высота > ширины (вертикальное изображение) И пропорция > 1.5
-                if height > width:
-                    proportion = round(height / width, 2)
-                    if proportion > 1.5:
-                        return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
+                    return f"{img_type}: {image_name} ({width}x{height}px, эталонное изображение)"
             return None
 
         try:
@@ -174,14 +168,9 @@ class AsyncProportionImageChecker:
                     width, height = image.width, image.height
                     self.image_cache[image_name] = (width, height)
 
-                    # Пропускаем эталонные изображения 750x1000px
+                    # Проверяем эталонные изображения 750x1000px
                     if width == 750 and height == 1000:
-                        return None
-                    # Проверяем: высота > ширины (вертикальное изображение) И пропорция > 1.5
-                    if height > width:
-                        proportion = round(height / width, 2)
-                        if proportion > 1.5:
-                            return f"{img_type}: {image_name} ({width}x{height}px, пропорция: {proportion})"
+                        return f"{img_type}: {image_name} ({width}x{height}px, эталонное изображение)"
 
         except Exception:
             pass
@@ -194,13 +183,13 @@ class AsyncProportionImageChecker:
         """Сохранение результатов в Excel файл"""
         wb = Workbook()
         ws = wb.active
-        ws.title = "Товары с вертикальными изображениями"
+        ws.title = "Товары с эталонными изображениями"
 
         headers = [
             "ID товара",
             "Код 1С",
             "Название товара",
-            "Вертикальные изображения (пропорция 3:4)",
+            "Эталонные изображения 750×1000px",
         ]
 
         # Записываем заголовки
@@ -217,7 +206,7 @@ class AsyncProportionImageChecker:
             ws.cell(row=row, column=1, value=product["id"])
             ws.cell(row=row, column=2, value=product["code_1c"])
             ws.cell(row=row, column=3, value=product["header"])
-            ws.cell(row=row, column=4, value="; ".join(product["proportion_images"]))
+            ws.cell(row=row, column=4, value="; ".join(product["reference_images"]))
 
         # Автоподбор ширины колонок
         for col in range(1, len(headers) + 1):
@@ -244,41 +233,41 @@ class AsyncProportionImageChecker:
         ws.cell(
             row=len(products) + 4,
             column=1,
-            value=f"Всего товаров с вертикальными изображениями: {len(products)}",
+            value=f"Всего товаров с эталонными изображениями 750×1000px: {len(products)}",
         )
 
         # Сохраняем файл
-        filename = f"products_proportion_3_4_ASYNC_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"products_reference_750x1000_ASYNC_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         wb.save(filename)
 
         print(f"\n✅ Результат сохранен в Excel файл: {filename}")
         print(
-            f"📊 Файл содержит {len(products)} товаров с вертикальными изображениями (пропорция 3:4)"
+            f"📊 Файл содержит {len(products)} товаров с эталонными изображениями 750×1000px"
         )
 
         return len(products)
 
 
 async def main_async():
-    checker = AsyncProportionImageChecker()
+    checker = AsyncReferenceImageChecker()
 
     try:
         print("🔐 Авторизация...")
         checker.authenticate()
         print("✅ Авторизация успешна")
 
-        print("🚀 Асинхронная проверка пропорций изображений...")
-        products = await checker.get_products_with_proportion_3_4()
+        print("🚀 Асинхронный поиск эталонных изображений 750×1000px...")
+        products = await checker.get_products_with_reference_images()
 
         print(
-            f"\n📊 Итого найдено: {len(products)} товаров с вертикальными изображениями (пропорция 3:4)"
+            f"\n📊 Итого найдено: {len(products)} товаров с эталонными изображениями 750×1000px"
         )
         print(f"💾 Кэш изображений: {len(checker.image_cache)} уникальных файлов")
 
         if products:
             checker.save_to_excel(products)
         else:
-            print("Товары с вертикальными изображениями не найдены")
+            print("Товары с эталонными изображениями 750×1000px не найдены")
 
         return True
 
