@@ -1,36 +1,36 @@
 # 🖼️ PIM Image Management Suite
 
-Комплексный набор инструментов для анализа, оптимизации и управления изображениями товаров в PIM системе.
+A comprehensive set of tools for analyzing, optimizing, and managing product images in PIM systems.
 
-## 📁 Структура проекта
+## 📁 Project Structure
 
-Проект содержит несколько специализированных скриптов для различных задач работы с изображениями:
+The project contains several specialized scripts for various image processing tasks:
 
-### 🔍 Анализ изображений
+### 🔍 Image Analysis
 
--   **`check_proportion.py`** - поиск товаров с эталонными изображениями 750×1000px
--   **`check_small_images_ASYNC.py`** - поиск товаров с изображениями < 500px
--   **`check_big_images_ASYNC.py`** - поиск товаров с изображениями > 1500px
--   **`check_all_template_size.py`** - поиск товаров с изображениями не соответствующими шаблону
--   **`images_ASYNC.py`** - поиск товаров без изображений
+-   **`check_proportion.py`** - find products with reference images 750×1000px
+-   **`check_small_images_ASYNC.py`** - find products with images < 500px
+-   **`check_big_images_ASYNC.py`** - find products with images > 1500px
+-   **`check_all_template_size.py`** - find products with images not matching template
+-   **`images_ASYNC.py`** - find products without images
 
-### ⚙️ Оптимизация и управление
+### ⚙️ Optimization and Management
 
--   **`optimized.py`** - основной скрипт оптимизации через imgproxy
--   **`update_perfect_images.py`** - обновление поля `is_perfect` в Supabase
--   **`add_pim_url.py`** - добавление ссылок PIM в Supabase
+-   **`optimized.py`** - main optimization script via imgproxy
+-   **`update_perfect_images.py`** - update `is_perfect` field in Supabase
+-   **`add_pim_url.py`** - add PIM links to Supabase
 
-## 🚀 Быстрый старт
+## 🚀 Quick Start
 
-### 1. Установка зависимостей
+### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Настройка переменных окружения
+### 2. Environment Variables Setup
 
-Создайте файл `.env` с необходимыми переменными:
+Create a `.env` file with the required variables:
 
 ```env
 # PIM API
@@ -43,103 +43,103 @@ PIM_IMAGE_URL=your_image_url
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 
-# Imgproxy (для оптимизации)
+# Imgproxy (for optimization)
 IMGPROXY_URL=your_imgproxy_url
 ```
 
-### 3. Создайте таблицу в Supabase
+### 3. Create Supabase Table
 
-Выполните SQL из файла `create_product_images_table.sql`
+Execute SQL from the `create_product_images_table.sql` file
 
-## 🔍 Анализ изображений
+## 🔍 Image Analysis
 
-### Поиск эталонных изображений (750×1000px)
+### Find Reference Images (750×1000px)
 
 ```bash
 python check_proportion.py
 ```
 
--   Находит товары с изображениями размером 750×1000px
--   Сохраняет результат в Excel файл
--   Генерирует файл `products_reference_750x1000.xlsx`
+-   Finds products with 750×1000px images
+-   Saves results to Excel file
+-   Generates `products_reference_750x1000.xlsx` file
 
-### Поиск проблемных изображений
+### Find Problematic Images
 
 ```bash
-# Изображения меньше 500px
+# Images smaller than 500px
 python check_small_images_ASYNC.py
 
-# Изображения больше 1500px
+# Images larger than 1500px
 python check_big_images_ASYNC.py
 
-# Изображения не соответствующие шаблону (500-1500px)
+# Images not matching template (500-1500px)
 python check_all_template_size.py
 
-# Товары без изображений
+# Products without images
 python images_ASYNC.py
 ```
 
-## ⚙️ Оптимизация изображений
+## ⚙️ Image Optimization
 
-### Основной скрипт оптимизации
+### Main Optimization Script
 
 ```bash
-# Тестовый режим - обработает 1-5 изображений
+# Test mode - processes 1-5 images
 python optimized.py preview
 
-# Сканирование всех изображений
+# Scan all images
 python optimized.py scan
 
-# Оптимизация через imgproxy
+# Optimize via imgproxy
 python optimized.py optimize
 
-# Загрузка обратно в PIM
+# Upload back to PIM
 python optimized.py upload
 
-# Полный цикл (scan → optimize → upload)
+# Full cycle (scan → optimize → upload)
 python optimized.py full
 
-# Проверка работы imgproxy
+# Test imgproxy functionality
 python optimized.py test
 ```
 
-### Обновление базы данных
+### Database Updates
 
 ```bash
-# Обновление поля is_perfect для эталонных изображений
+# Update is_perfect field for reference images
 python update_perfect_images.py
 
-# Добавление ссылок PIM в Supabase
+# Add PIM links to Supabase
 python add_pim_url.py
 ```
 
-## 📊 Параметры оптимизации
+## 📊 Optimization Parameters
 
-Все изображения оптимизируются с параметрами:
+All images are optimized with the following parameters:
 
--   **Ширина**: 750px
--   **Высота**: 1000px (с белым фоном)
--   **Формат**: JPEG
--   **Качество**: 85%
+-   **Width**: 750px
+-   **Height**: 1000px (with white background)
+-   **Format**: JPEG
+-   **Quality**: 85%
 
-## 📋 Таблица product_images
+## 📋 product_images Table
 
-Отслеживает статус каждого изображения:
+Tracks the status of each image:
 
-| Поле           | Описание                         |
-| -------------- | -------------------------------- |
-| `id`           | Уникальный ID записи             |
-| `product_id`   | ID товара в PIM                  |
-| `image_name`   | Имя файла изображения            |
-| `image_type`   | Тип изображения (Основное/Доп.)  |
-| `is_optimized` | Оптимизировано через imgproxy    |
-| `is_uploaded`  | Загружено обратно в PIM          |
-| `is_perfect`   | Эталонное изображение 750×1000px |
+| Field          | Description                  |
+| -------------- | ---------------------------- |
+| `id`           | Unique record ID             |
+| `product_id`   | Product ID in PIM            |
+| `image_name`   | Image file name              |
+| `image_type`   | Image type (Main/Additional) |
+| `is_optimized` | Optimized via imgproxy       |
+| `is_uploaded`  | Uploaded back to PIM         |
+| `is_perfect`   | Reference image 750×1000px   |
 
-## 🔍 Мониторинг прогресса
+## 🔍 Progress Monitoring
 
 ```sql
--- Общая статистика
+-- General statistics
 SELECT
     COUNT(*) as total,
     SUM(CASE WHEN is_optimized THEN 1 ELSE 0 END) as optimized,
@@ -147,42 +147,42 @@ SELECT
     SUM(CASE WHEN is_perfect THEN 1 ELSE 0 END) as perfect
 FROM product_images;
 
--- Необработанные изображения
+-- Unprocessed images
 SELECT product_id, image_name, image_type
 FROM product_images
 WHERE NOT is_optimized
 LIMIT 10;
 
--- Эталонные изображения
+-- Reference images
 SELECT product_id, image_name, image_type
 FROM product_images
 WHERE is_perfect = true
 LIMIT 10;
 ```
 
-## 📁 Выходные файлы
+## 📁 Output Files
 
-Скрипты генерируют Excel файлы с результатами анализа:
+Scripts generate Excel files with analysis results:
 
--   `products_reference_750x1000_ASYNC_[дата].xlsx` - товары с эталонными изображениями
--   `products_small_images_ASYNC_[дата].xlsx` - товары с маленькими изображениями
--   `products_big_images_ASYNC_[дата].xlsx` - товары с большими изображениями
--   `products_no_template_size_ASYNC_[дата].xlsx` - товары с неподходящими изображениями
--   `products_without_images_ASYNC_[дата].xlsx` - товары без изображений
+-   `products_reference_750x1000_ASYNC_[date].xlsx` - products with reference images
+-   `products_small_images_ASYNC_[date].xlsx` - products with small images
+-   `products_big_images_ASYNC_[date].xlsx` - products with large images
+-   `products_no_template_size_ASYNC_[date].xlsx` - products with unsuitable images
+-   `products_without_images_ASYNC_[date].xlsx` - products without images
 
-## 🛠️ Технические особенности
+## 🛠️ Technical Features
 
--   **Асинхронная обработка** - все скрипты используют asyncio для быстрой работы
--   **Пакетная обработка** - данные обрабатываются пакетами для избежания перегрузки API
--   **Кэширование** - размеры изображений кэшируются для ускорения повторных проверок
--   **Обработка ошибок** - все скрипты устойчивы к сетевым ошибкам и таймаутам
--   **Прогресс-индикаторы** - подробная информация о ходе выполнения
+-   **Asynchronous Processing** - all scripts use asyncio for fast operation
+-   **Batch Processing** - data is processed in batches to avoid API overload
+-   **Caching** - image sizes are cached to speed up repeated checks
+-   **Error Handling** - all scripts are resilient to network errors and timeouts
+-   **Progress Indicators** - detailed information about execution progress
 
-## 📝 Логирование
+## 📝 Logging
 
-Все скрипты ведут подробные логи в файл `image_optimizer.log` с информацией о:
+All scripts maintain detailed logs in the `image_optimizer.log` file with information about:
 
--   Времени выполнения операций
--   Количестве обработанных товаров
--   Ошибках и предупреждениях
--   Статистике результатов
+-   Operation execution time
+-   Number of processed products
+-   Errors and warnings
+-   Result statistics
