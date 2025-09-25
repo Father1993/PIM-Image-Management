@@ -56,11 +56,14 @@ class CatalogSyncer:
                 "parent_id": parent_id,
                 "header": category["header"],
                 "sync_uid": category["syncUid"],
-                "level": category.get(
-                    "level", level
-                ),  # Используем level из API если есть
-                "product_count": category.get("productCount", 0),
-                "product_count_additional": category.get("productCountAdditional", 0),
+                "level": level,  # Используем рассчитанный level
+                "product_count": category.get(
+                    "productCountPim", category.get("productCount", 0)
+                ),
+                "product_count_additional": category.get(
+                    "productCountPimAdditional",
+                    category.get("productCountAdditional", 0),
+                ),
                 "created_at": category.get("createdAt"),
                 "updated_at": category.get("updatedAt"),
             }
@@ -68,9 +71,7 @@ class CatalogSyncer:
 
         # Обрабатываем вложенные категории
         for child in category.get("children", []):
-            self.parse_categories(
-                child, category["id"], category.get("level", level) + 1
-            )
+            self.parse_categories(child, category["id"], level + 1)
 
     def clear_and_insert(self, client):
         """Очистка таблицы и вставка новых данных"""
@@ -79,12 +80,16 @@ class CatalogSyncer:
             client.table("categories").delete().neq("id", 0).execute()
             print(f"🗑️ Таблица categories очищена")
 
+            # Сортируем категории по уровням (сначала родители, потом дети)
+            sorted_categories = sorted(self.categories, key=lambda x: x["level"])
+            print(f"🔄 Категории отсортированы по уровням")
+
             # Вставляем категории пакетами по 100
-            for i in range(0, len(self.categories), 100):
-                batch = self.categories[i : i + 100]
+            for i in range(0, len(sorted_categories), 100):
+                batch = sorted_categories[i : i + 100]
                 client.table("categories").insert(batch).execute()
                 print(
-                    f"📝 Вставлено {min(i+100, len(self.categories))}/{len(self.categories)} категорий"
+                    f"📝 Вставлено {min(i+100, len(sorted_categories))}/{len(sorted_categories)} категорий"
                 )
         except Exception as e:
             if "does not exist" in str(e):
@@ -111,8 +116,8 @@ async def main():
             print("✅ Каталог загружен")
 
             print("🔄 Обрабатываем дерево категорий...")
-            # Сначала добавляем корневую категорию (id=21)
-            syncer.parse_categories(catalog_data, catalog_data.get("parentId"))
+            # Сначала добавляем корневую категорию (id=21) с правильным уровнем
+            syncer.parse_categories(catalog_data, catalog_data.get("parentId"), 2)
             print(f"✅ Обработано {len(syncer.categories)} категорий")
 
         # Работаем с Supabase
