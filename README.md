@@ -186,3 +186,6 @@ All scripts maintain detailed logs in the `image_optimizer.log` file with inform
 -   Number of processed products
 -   Errors and warnings
 -   Result statistics
+
+
+test
