@@ -144,7 +144,7 @@ async def process_image(session, product: dict, index: int, total: int):
     supabase.table("products").update(
         {
             "is_optimized": True,
-            "optimized_url": new_url,
+            "image_optimized_url": new_url,
             "updated_at_image_optimized": datetime.now().isoformat(),
         }
     ).eq("id", product_id).execute()

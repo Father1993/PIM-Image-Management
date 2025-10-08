@@ -30,7 +30,7 @@ async def update_batch(session, url, headers, batch, batch_num, total_batches):
     tasks = [update_with_sem(item) for item in batch if item.get("code_1c") and item.get("GUID")]
     results = await asyncio.gather(*tasks)
     
-    print(f"✅ Батч {batch_num}/{total_batches} | Успешно: {sum(results)}/{len(results)}")
+    print(f"Батч {batch_num}/{total_batches} | Успешно: {sum(results)}/{len(results)}")
 
 async def main():
     url = f"{os.getenv('SUPABASE_URL')}/rest/v1/products"
@@ -51,7 +51,7 @@ async def main():
         for i, batch in enumerate(batches, 1):
             await update_batch(session, url, headers, batch, i, len(batches))
     
-    print("\n🎉 Готово!")
+    print("\nГотово!")
 
 asyncio.run(main())
 
