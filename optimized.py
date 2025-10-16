@@ -94,7 +94,7 @@ async def process_image(session, token, image_record):
             {
                 "is_optimized": True,
                 "is_uploaded": True,
-                "optimized_url": optimized_url,
+                "image_optimized_url": optimized_url,
                 "updated_at": datetime.now().isoformat(),
             }
         ).eq("id", image_id).execute()

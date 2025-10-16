@@ -17,8 +17,11 @@ The project contains several specialized scripts for various image processing ta
 ### ⚙️ Optimization and Management
 
 -   **`optimized.py`** - main optimization script via imgproxy
+-   **`optimize_from_supabase.py`** - optimize images directly from Supabase database
 -   **`update_perfect_images.py`** - update `is_perfect` field in Supabase
 -   **`add_pim_url.py`** - add PIM links to Supabase
+-   **`base_to_json.py`** - export GUID and image_optimized_url from Supabase to JSON
+-   **`json_to_base.py`** - bulk import GUID data from JSON to Supabase
 
 ## 🚀 Quick Start
 
@@ -103,6 +106,23 @@ python optimized.py full
 python optimized.py test
 ```
 
+### Optimize from Supabase
+
+```bash
+# Optimize all unprocessed products
+python optimize_from_supabase.py
+
+# Optimize with limit (e.g., 100 products)
+python optimize_from_supabase.py 100
+```
+
+Скрипт автоматически:
+- Получает продукты с неоптимизированными изображениями из Supabase
+- Оптимизирует через imgproxy (750×1000px, белый фон)
+- Загружает в бакет `optimized` с структурой по датам (год/месяц/день)
+- Обновляет поля `is_optimized`, `optimized_url` в базе
+- Обрабатывает батчами по 100 продуктов параллельно
+
 ### Database Updates
 
 ```bash
@@ -111,7 +131,25 @@ python update_perfect_images.py
 
 # Add PIM links to Supabase
 python add_pim_url.py
+
+# Export GUID data to export.json
+python base_to_json.py
+
+# Import GUID data from products.json
+python json_to_base.py
 ```
+
+**base_to_json.py** - экспортирует code_1c, GUID и image_optimized_url из Supabase в JSON:
+- Выгружает все записи с заполненным GUID из базы
+- Сохраняет в `export.json` массив объектов `{code_1c, GUID, image_optimized_url}`
+- Использует cursor-based пагинацию для надежности
+- Автоматически удаляет дубликаты по GUID
+
+**json_to_base.py** - импортирует GUID из JSON файла в Supabase:
+- Читает `products.json` с массивом объектов `{code_1c, GUID}`
+- Обновляет поле GUID по совпадению code_1c
+- Обрабатывает батчами по 250, параллельно по 30 запросов
+- Показывает прогресс по батчам
 
 ## 📊 Optimization Parameters
 
@@ -169,6 +207,11 @@ Scripts generate Excel files with analysis results:
 -   `products_big_images_ASYNC_[date].xlsx` - products with large images
 -   `products_no_template_size_ASYNC_[date].xlsx` - products with unsuitable images
 -   `products_without_images_ASYNC_[date].xlsx` - products without images
+
+Database export/import files:
+
+-   `export.json` - exported code_1c, GUID and image_optimized_url from Supabase
+-   `products.json` - GUID data for import to Supabase
 
 ## 🛠️ Technical Features
 
