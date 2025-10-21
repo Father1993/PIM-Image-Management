@@ -8,20 +8,20 @@ The project contains several specialized scripts for various image processing ta
 
 ### 🔍 Image Analysis
 
--   **`check_proportion.py`** - find products with reference images 750×1000px
--   **`check_small_images_ASYNC.py`** - find products with images < 500px
--   **`check_big_images_ASYNC.py`** - find products with images > 1500px
--   **`check_all_template_size.py`** - find products with images not matching template
--   **`images_ASYNC.py`** - find products without images
+- **`check_proportion.py`** - find products with reference images 750×1000px
+- **`check_small_images_ASYNC.py`** - find products with images < 500px
+- **`check_big_images_ASYNC.py`** - find products with images > 1500px
+- **`check_all_template_size.py`** - find products with images not matching template
+- **`images_ASYNC.py`** - find products without images
 
 ### ⚙️ Optimization and Management
 
--   **`optimized.py`** - main optimization script via imgproxy
--   **`optimize_from_supabase.py`** - optimize images directly from Supabase database
--   **`update_perfect_images.py`** - update `is_perfect` field in Supabase
--   **`add_pim_url.py`** - add PIM links to Supabase
--   **`base_to_json.py`** - export GUID and image_optimized_url from Supabase to JSON
--   **`json_to_base.py`** - bulk import GUID data from JSON to Supabase
+- **`optimized.py`** - main optimization script via imgproxy
+- **`optimize_from_supabase.py`** - optimize images directly from Supabase database
+- **`update_perfect_images.py`** - update `is_perfect` field in Supabase
+- **`add_pim_url.py`** - add PIM links to Supabase
+- **`base_to_json.py`** - export GUID and image_optimized_url from Supabase to JSON
+- **`json_to_base.py`** - bulk import GUID data from JSON to Supabase
 
 ## 🚀 Quick Start
 
@@ -62,9 +62,9 @@ Execute SQL from the `create_product_images_table.sql` file
 python check_proportion.py
 ```
 
--   Finds products with 750×1000px images
--   Saves results to Excel file
--   Generates `products_reference_750x1000.xlsx` file
+- Finds products with 750×1000px images
+- Saves results to Excel file
+- Generates `products_reference_750x1000.xlsx` file
 
 ### Find Problematic Images
 
@@ -117,6 +117,7 @@ python optimize_from_supabase.py 100
 ```
 
 Скрипт автоматически:
+
 - Получает продукты с неоптимизированными изображениями из Supabase
 - Оптимизирует через imgproxy (750×1000px, белый фон)
 - Загружает в бакет `optimized` с структурой по датам (год/месяц/день)
@@ -139,13 +140,31 @@ python base_to_json.py
 python json_to_base.py
 ```
 
+### Upload Optimized Images to PIM
+
+```bash
+# Upload optimized images back to PIM system
+python push_optimized_images_to_pim.py
+```
+
+Скрипт автоматически:
+
+- Получает товары с оптимизированными изображениями из Supabase
+- Скачивает изображения по URL из поля `image_optimized_url`
+- Загружает изображения в PIM через API `/api/v1/product/{id}/upload-main-picture`
+- Обрабатывает батчами по 1000 товаров параллельно (макс. 100 одновременно)
+- Сохраняет прогресс в `upload_progress.json` для возможности возобновления
+- Поддерживает корректную остановку (Ctrl+C) с сохранением прогресса
+
 **base_to_json.py** - экспортирует code_1c, GUID и image_optimized_url из Supabase в JSON:
+
 - Выгружает все записи с заполненным GUID из базы
 - Сохраняет в `export.json` массив объектов `{code_1c, GUID, image_optimized_url}`
 - Использует cursor-based пагинацию для надежности
 - Автоматически удаляет дубликаты по GUID
 
 **json_to_base.py** - импортирует GUID из JSON файла в Supabase:
+
 - Читает `products.json` с массивом объектов `{code_1c, GUID}`
 - Обновляет поле GUID по совпадению code_1c
 - Обрабатывает батчами по 250, параллельно по 30 запросов
@@ -155,10 +174,10 @@ python json_to_base.py
 
 All images are optimized with the following parameters:
 
--   **Width**: 750px
--   **Height**: 1000px (with white background)
--   **Format**: JPEG
--   **Quality**: 85%
+- **Width**: 750px
+- **Height**: 1000px (with white background)
+- **Format**: JPEG
+- **Quality**: 85%
 
 ## 📋 product_images Table
 
@@ -202,30 +221,37 @@ LIMIT 10;
 
 Scripts generate Excel files with analysis results:
 
--   `products_reference_750x1000_ASYNC_[date].xlsx` - products with reference images
--   `products_small_images_ASYNC_[date].xlsx` - products with small images
--   `products_big_images_ASYNC_[date].xlsx` - products with large images
--   `products_no_template_size_ASYNC_[date].xlsx` - products with unsuitable images
--   `products_without_images_ASYNC_[date].xlsx` - products without images
+- `products_reference_750x1000_ASYNC_[date].xlsx` - products with reference images
+- `products_small_images_ASYNC_[date].xlsx` - products with small images
+- `products_big_images_ASYNC_[date].xlsx` - products with large images
+- `products_no_template_size_ASYNC_[date].xlsx` - products with unsuitable images
+- `products_without_images_ASYNC_[date].xlsx` - products without images
 
 Database export/import files:
 
--   `export.json` - exported code_1c, GUID and image_optimized_url from Supabase
--   `products.json` - GUID data for import to Supabase
+- `export.json` - exported code_1c, GUID and image_optimized_url from Supabase
+- `products.json` - GUID data for import to Supabase
+
+Progress tracking files:
+
+- `upload_progress.json` - progress tracking for push_optimized_images_to_pim.py
 
 ## 🛠️ Technical Features
 
--   **Asynchronous Processing** - all scripts use asyncio for fast operation
--   **Batch Processing** - data is processed in batches to avoid API overload
--   **Caching** - image sizes are cached to speed up repeated checks
--   **Error Handling** - all scripts are resilient to network errors and timeouts
--   **Progress Indicators** - detailed information about execution progress
+- **Asynchronous Processing** - all scripts use asyncio for fast operation
+- **Batch Processing** - data is processed in batches to avoid API overload
+- **Caching** - image sizes are cached to speed up repeated checks
+- **Error Handling** - all scripts are resilient to network errors and timeouts
+- **Progress Indicators** - detailed information about execution progress
+- **Progress Persistence** - push_optimized_images_to_pim.py saves progress to resume interrupted uploads
+- **Token Management** - automatic PIM API token refresh to prevent authentication failures
+- **Graceful Shutdown** - supports Ctrl+C with progress preservation
 
 ## 📝 Logging
 
 All scripts maintain detailed logs in the `image_optimizer.log` file with information about:
 
--   Operation execution time
--   Number of processed products
--   Errors and warnings
--   Result statistics
+- Operation execution time
+- Number of processed products
+- Errors and warnings
+- Result statistics
