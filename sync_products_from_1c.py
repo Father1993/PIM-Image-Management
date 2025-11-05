@@ -37,6 +37,7 @@ def prepare_product(product_json):
         "barcode": format_list_to_string(product_json.get("Barcode", [])),
         "provider": format_list_to_string(product_json.get("Vendor", [])),
         "matrix": product_json.get("Matrix", "").strip() or None,
+        "is_new": True,
     }
 
 
@@ -46,12 +47,11 @@ def main():
         client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("✅ Подключение к базе данных установлено")
 
-        # Получаем все существующие code_1c и максимальный id из таблицы products
+        # Получаем все существующие code_1c из таблицы products
         print("📊 Загрузка существующих товаров из базы...")
-        response = client.table("products").select("code_1c, id").execute()
+        response = client.table("products").select("code_1c").execute()
         existing_codes = {item.get("code_1c") for item in (response.data or []) if item.get("code_1c")}
-        max_id = max([item.get("id", 0) for item in (response.data or []) if item.get("id")], default=0)
-        print(f"✅ Найдено {len(existing_codes)} товаров в базе, максимальный id: {max_id}")
+        print(f"✅ Найдено {len(existing_codes)} товаров в базе")
 
         # Загружаем JSON файл
         print(f"📂 Загрузка данных из {JSON_FILE}...")
@@ -74,9 +74,10 @@ def main():
             print("✅ Все товары уже есть в базе")
             return
 
-        # Добавляем id для новых товаров
+        # Добавляем временные отрицательные id для новых товаров (будут заменены на id из PIM)
+        # Отрицательные id - маркер временных записей
         for idx, product in enumerate(new_products, start=1):
-            product["id"] = max_id + idx
+            product["id"] = -idx
 
         # Вставляем новые товары пакетами
         batch_size = 100
