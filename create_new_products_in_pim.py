@@ -381,6 +381,60 @@ def create_product_in_pim(token, product_data):
         }
 
 
+def find_product_by_articul(token, articul, catalog_id=CATALOG_1C_ID):
+    """Поиск товара в PIM по артикулу для предотвращения дубликатов"""
+    if not articul:
+        return None
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        # Используем scroll API для поиска по всем товарам
+        # Первый запрос - получаем scrollId
+        url = f"{PIM_API_URL}/product/scroll"
+        params = {"catalogId": catalog_id}
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success") and data.get("data"):
+                scroll_id = data["data"].get("scrollId")
+                products = data["data"].get("products", [])
+                
+                # Проверяем первую порцию товаров
+                for product in products:
+                    if str(product.get("articul", "")).strip() == str(articul).strip():
+                        return product
+                
+                # Если не нашли, продолжаем поиск по scroll
+                while scroll_id:
+                    url = f"{PIM_API_URL}/product/scroll"
+                    params = {"scrollId": scroll_id, "catalogId": catalog_id}
+                    response = requests.get(url, headers=headers, params=params, timeout=30)
+                    
+                    if response.status_code != 200:
+                        break
+                    
+                    data = response.json()
+                    if not data.get("success"):
+                        break
+                    
+                    scroll_data = data.get("data", {})
+                    products = scroll_data.get("products", [])
+                    
+                    if not products:  # Больше нет товаров
+                        break
+                    
+                    for product in products:
+                        if str(product.get("articul", "")).strip() == str(articul).strip():
+                            return product
+                    
+                    scroll_id = scroll_data.get("scrollId")
+        
+        return None
+    except Exception:
+        return None
+
+
 def check_product_exists_in_pim(token, pim_id):
     """Проверка существования товара в PIM по ID"""
     headers = {"Authorization": f"Bearer {token}"}
@@ -455,6 +509,28 @@ def main():
         new_products = response.data
         print(f"✅ Найдено {len(new_products)} новых товаров для создания\n")
         
+        # Проверка дубликатов в Supabase: находим все товары с link_pim по code_1c
+        print("🔍 Проверка дубликатов в Supabase...")
+        all_products = client.table("products").select("code_1c, link_pim, id").execute().data
+        existing_links = {}  # code_1c -> (pim_id, link_pim)
+        for p in all_products:
+            code = str(p.get("code_1c", "")).strip()
+            link = p.get("link_pim")
+            if code and link:
+                # Извлекаем PIM ID из ссылки
+                try:
+                    pim_id = int(link.split("/")[-1])
+                    # Сохраняем первый найденный товар с таким code_1c
+                    if code not in existing_links:
+                        existing_links[code] = (pim_id, link)
+                except (ValueError, IndexError):
+                    pass
+        
+        duplicates_in_supabase = sum(1 for p in new_products if str(p.get("code_1c", "")).strip() in existing_links)
+        if duplicates_in_supabase > 0:
+            print(f"⚠️  Найдено {duplicates_in_supabase} товаров, которые уже имеют link_pim в Supabase")
+        print(f"✅ Проверка завершена\n")
+        
         if not new_products:
             print("✅ Нет новых товаров для создания (is_new=false или отсутствуют)")
             return
@@ -473,6 +549,47 @@ def main():
                 if not product.get("is_new", False):
                     print(f"[{idx}/{len(new_products)}] ⚠️  Пропущен - is_new=false: {product.get('code_1c')}")
                     continue
+                
+                # Проверка: если уже есть link_pim в Supabase - товар уже создан
+                if product.get("link_pim"):
+                    print(f"[{idx}/{len(new_products)}] ⚠️  Пропущен - уже есть link_pim: {product.get('link_pim')}")
+                    continue
+                
+                # Проверка дубликатов в Supabase по code_1c
+                code_1c = product.get('code_1c', '')
+                if code_1c and code_1c in existing_links:
+                    existing_id, existing_link = existing_links[code_1c]
+                    print(f"[{idx}/{len(new_products)}] ⚠️  ДУБЛИКАТ В SUPABASE!")
+                    print(f"   🔢 Код 1С: {code_1c}")
+                    print(f"   📦 Существующий товар в PIM: ID={existing_id}")
+                    print(f"   🔗 Существующий link_pim: {existing_link}")
+                    print(f"   ⚠️  Используем существующий товар вместо создания нового")
+                    
+                    # Обновляем Supabase, используя существующий товар
+                    update_product_in_supabase(client, product["id"], existing_id, existing_link)
+                    success_count += 1
+                    print(f"   ✅ Связь с существующим товаром установлена")
+                    continue
+                
+                # Проверка дубликатов в PIM (только если не нашли в Supabase)
+                if code_1c:
+                    print(f"[{idx}/{len(new_products)}] 🔍 Проверяем дубликаты в PIM для кода 1С: {code_1c}...")
+                    existing_product = find_product_by_articul(token, code_1c)
+                    if existing_product:
+                        existing_id = existing_product.get("id")
+                        existing_name = existing_product.get("header", "N/A")
+                        print(f"   ⚠️  ТОВАР УЖЕ СУЩЕСТВУЕТ В PIM!")
+                        print(f"   📦 Существующий товар: {existing_name} (ID: {existing_id})")
+                        print(f"   ⚠️  Пропускаем создание, чтобы избежать дубликата")
+                        
+                        # Обновляем Supabase, используя существующий товар
+                        pim_link = f"{PIM_API_URL.replace('/api/v1', '')}/product/{existing_id}"
+                        update_product_in_supabase(client, product["id"], existing_id, pim_link)
+                        success_count += 1
+                        print(f"   ✅ Связь с существующим товаром установлена в Supabase")
+                        continue
+                    else:
+                        print(f"   ✅ Дубликатов не найдено, создаем новый товар")
                 
                 # Определяем категорию по полному пути хлебных крошек (создаем если не найдена)
                 category_obj = find_category_by_breadcrumbs(
@@ -588,6 +705,18 @@ def main():
                             "pim_id": pim_id
                         })
                         continue
+                    
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: проверяем, не создался ли дубликат
+                    # Ищем другие товары с таким же артикулом
+                    code_1c = product.get('code_1c', '')
+                    if code_1c:
+                        # Проверяем в Supabase - есть ли другие товары с таким code_1c и link_pim
+                        duplicate_check = client.table("products").select("id, link_pim").eq("code_1c", code_1c).neq("id", product["id"]).execute()
+                        duplicates = [p for p in duplicate_check.data if p.get("link_pim")]
+                        if duplicates:
+                            print(f"   ⚠️  ВНИМАНИЕ: Найдены другие товары в Supabase с таким же code_1c и link_pim!")
+                            for dup in duplicates:
+                                print(f"      - ID: {dup.get('id')}, link_pim: {dup.get('link_pim')}")
                     
                     # Проверка категории созданного товара
                     created_category_id = created_product.get("catalogId")
