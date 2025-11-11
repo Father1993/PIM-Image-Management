@@ -17,9 +17,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Конфигурация
-PIM_API_URL = os.getenv("PRODUCT_BASE")
-PIM_LOGIN = os.getenv("LOGIN_TEST")
-PIM_PASSWORD = os.getenv("PASSWORD_TEST")
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 CATALOG_1C_ID = 22  # ID каталога "Уровень - 1с"
@@ -129,54 +129,121 @@ def create_category(token, header, parent_id=CATALOG_1C_ID):
             json=data,
             timeout=30
         )
-        response.raise_for_status()
+        
+        if response.status_code >= 400:
+            print(f"      ❌ HTTP {response.status_code}: {response.text[:200]}")
+            return False
+            
         result = response.json()
-        return result.get("success", False)
-    except Exception:
+        
+        if result.get("success"):
+            print(f"      ✅ Категория '{header}' создана успешно (родитель ID: {parent_id})")
+            # Небольшая задержка для синхронизации на сервере
+            import time
+            time.sleep(0.5)
+            return True
+        else:
+            error_msg = result.get("message", "Неизвестная ошибка")
+            print(f"      ❌ Не удалось создать категорию '{header}': {error_msg}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"      ❌ Ошибка запроса при создании категории '{header}': {str(e)}")
+        return False
+    except Exception as e:
+        print(f"      ❌ Неожиданная ошибка при создании категории '{header}': {str(e)}")
         return False
 
 
 def ensure_category_path(token, breadcrumbs, categories_map, categories_by_path, root_category, debug=False):
-    """Создает цепочку категорий, если они не существуют"""
+    """
+    Создает полную цепочку категорий от корня до конечной категории.
+    Возвращает объект конечной категории или None при ошибке.
+    """
     if not breadcrumbs:
         return None
     
-    parts = [p.strip() for p in breadcrumbs.split("/")]
-    current_parent_id = root_category["id"]
-    current_path = ""
-    
-    for part in parts:
-        normalized_part = normalize_category_name(part)
-        current_path = f"{current_path} / {normalized_part}" if current_path else normalized_part
+    parts = [p.strip() for p in breadcrumbs.split("/") if p.strip()]
+    if not parts:
+        return None
         
-        if current_path in categories_by_path:
-            current_parent_id = categories_by_path[current_path]["id"]
-            continue
+    current_parent_id = root_category["id"]
+    current_path = root_category["full_path"]  # Начинаем с корневого пути
+    
+    for i, part in enumerate(parts):
+        normalized_part = normalize_category_name(part)
+        
+        # Строим полный путь включая родительский
+        if current_path == normalize_category_name(root_category["header"]):
+            # Если мы в корне, не добавляем лишний разделитель
+            next_path = f"{current_path} / {normalized_part}"
+        else:
+            next_path = f"{current_path} / {normalized_part}"
         
         if debug:
-            print(f"      📝 Создаем категорию: '{part}' (родитель ID: {current_parent_id})")
+            print(f"      🔍 Проверяем путь: '{next_path}'")
+        
+        # Проверяем существование категории по полному пути
+        if next_path in categories_by_path:
+            current_parent_id = categories_by_path[next_path]["id"]
+            current_path = next_path
+            if debug:
+                print(f"      ℹ️  Категория существует: '{part}' (ID: {current_parent_id})")
+            continue
+        
+        # Категория не существует - создаем
+        if debug:
+            print(f"      📝 Создаем категорию [{i+1}/{len(parts)}]: '{part}' (родитель ID: {current_parent_id})")
         
         if create_category(token, part, current_parent_id):
+            # Даем время серверу синхронизировать данные
+            import time
+            time.sleep(1.0)
+            
             # Перезагружаем категории для получения ID новой категории
-            new_map, new_paths, _ = load_categories(token)
+            if debug:
+                print(f"      🔄 Перезагружаем список категорий...")
+            new_map, new_paths, updated_root = load_categories(token)
             categories_map.clear()
             categories_map.update(new_map)
             categories_by_path.clear()
             categories_by_path.update(new_paths)
             
-            if current_path in categories_by_path:
-                current_parent_id = categories_by_path[current_path]["id"]
+            # Проверяем что категория появилась (с повторными попытками)
+            found = False
+            for retry in range(3):
+                if next_path in categories_by_path:
+                    current_parent_id = categories_by_path[next_path]["id"]
+                    current_path = next_path
+                    found = True
+                    if debug:
+                        print(f"      ✅ Категория найдена после перезагрузки: '{part}' (ID: {current_parent_id})")
+                    break
+                elif retry < 2:
+                    if debug:
+                        print(f"      ⏳ Попытка {retry + 1}/3: категория еще не появилась, ждем...")
+                    time.sleep(2.0)
+                    # Повторная загрузка
+                    new_map, new_paths, _ = load_categories(token)
+                    categories_map.clear()
+                    categories_map.update(new_map)
+                    categories_by_path.clear()
+                    categories_by_path.update(new_paths)
+            
+            if not found:
                 if debug:
-                    print(f"      ✅ Категория создана: '{part}' (ID: {current_parent_id})")
-            else:
-                if debug:
-                    print(f"      ⚠️  Категория создана, но не найдена при перезагрузке")
+                    print(f"      ❌ Категория создана, но не найдена в '{next_path}' после 3 попыток")
+                    print(f"      🔍 Доступные пути начинающиеся с '{current_path[:30]}':")
+                    for path in sorted(categories_by_path.keys()):
+                        if path.startswith(current_path[:30]):
+                            print(f"          - {path}")
                 return None
         else:
             if debug:
                 print(f"      ❌ Не удалось создать категорию: '{part}'")
             return None
     
+    # Возвращаем конечную категорию
     return categories_by_path.get(current_path)
 
 
@@ -212,52 +279,50 @@ def find_similar_category(search_term, categories_map, categories_by_path):
 
 def find_category_by_breadcrumbs(breadcrumbs, categories_map, categories_by_path, token=None, root_category=None, debug=False):
     """
-    Поиск категории по хлебным крошкам. Если не найдена - создает её.
-    Возвращает объект категории или None (тогда используется корневая)
+    Поиск категории по хлебным крошкам. Если полный путь не найден - создает его.
+    ВАЖНО: Всегда ищет и создает ПОЛНЫЙ путь, не использует частичные совпадения.
     """
-    if not breadcrumbs:
+    if not breadcrumbs or not breadcrumbs.strip():
         if debug:
             print(f"      ⚠️  Хлебные крошки пустые")
         return None
     
-    normalized_breadcrumbs = " / ".join([normalize_category_name(p) for p in breadcrumbs.split("/")])
+    # Очищаем и валидируем хлебные крошки
+    parts = [p.strip() for p in breadcrumbs.split("/") if p.strip()]
+    if not parts:
+        if debug:
+            print(f"      ⚠️  После очистки хлебные крошки пустые")
+        return None
+    
+    # Формируем полный путь с корневой категорией
+    root_name = normalize_category_name(root_category["header"])
+    normalized_breadcrumbs = " / ".join([normalize_category_name(p) for p in parts])
+    full_normalized_path = f"{root_name} / {normalized_breadcrumbs}"
     
     if debug:
-        print(f"      🔍 Ищем категорию для: '{normalized_breadcrumbs}'")
+        print(f"      🔍 Ищем категорию для: '{full_normalized_path}'")
     
-    # Поиск по полному пути
-    if normalized_breadcrumbs in categories_by_path:
+    # Поиск по полному пути - единственный корректный способ
+    if full_normalized_path in categories_by_path:
         if debug:
-            print(f"      ✅ Найдено по полному пути: {categories_by_path[normalized_breadcrumbs]['header']}")
-        return categories_by_path[normalized_breadcrumbs]
+            print(f"      ✅ Найдено по полному пути: {categories_by_path[full_normalized_path]['header']}")
+        return categories_by_path[full_normalized_path]
     
-    # Поиск по частям
-    parts = [normalize_category_name(p) for p in breadcrumbs.split("/")]
-    for part in reversed(parts):
-        if part in categories_map:
-            found_category = categories_map[part]
-            if debug:
-                print(f"      ✅ Найдено по части '{part}': {found_category['header']} (ID: {found_category['id']})")
-            return found_category
-    
-    # Поиск похожих
-    for part in reversed(parts):
-        similar = find_similar_category(part, categories_map, categories_by_path)
-        if similar:
-            if debug:
-                print(f"      ✅ Найдено похожую категорию для '{part}': {similar['header']} (ID: {similar['id']})")
-            return similar
-    
-    # Если не найдено и есть token - создаем категорию
+    # Если полный путь не найден - создаем его
     if token and root_category:
         if debug:
-            print(f"      📝 Категория не найдена, создаем...")
+            print(f"      📝 Полный путь не найден, создаем структуру категорий...")
         created = ensure_category_path(token, breadcrumbs, categories_map, categories_by_path, root_category, debug)
         if created:
+            if debug:
+                print(f"      ✅ Структура категорий создана: {created['header']} (ID: {created['id']})")
             return created
+        else:
+            if debug:
+                print(f"      ❌ Не удалось создать структуру категорий")
     
     if debug:
-        print(f"      ❌ Категория не найдена, будет использована корневая")
+        print(f"      ❌ Категория не найдена и не может быть создана")
     return None
 
 
@@ -305,7 +370,8 @@ def prepare_product_data(product, category_obj, root_category):
             "enabled": root_category.get("enabled", True)
         }
     
-    # Базовые данные товара
+    # Базовые данные товара - передаем все поля как в примере из 1.json
+    now_iso = datetime.now().isoformat()
     data = {
         "id": 0,
         "header": product.get("product_name") or "Товар без названия",
@@ -319,10 +385,74 @@ def prepare_product_data(product, category_obj, root_category):
         "priceRic": 0,
         "enabled": True,
         "syncUid": None,
-        "catalog": catalog_obj,
+        "catalog": catalog_obj,  # Передаем объект catalog как в примере
         "catalogId": catalog_obj["id"],
         "pos": 500,
-        "deleted": False
+        "deleted": False,
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+        "deletedAt": None,
+        "supplyTerm": 0,  # Как в примере из 1.json
+        # Объекты как None
+        "unit": None,
+        "picture": None,
+        "supplier": None,
+        "manufacturer": None,
+        "brand": None,
+        "country": None,
+        "manufacturerSeries": None,
+        # Массивы
+        "productTags": [],
+        "productSystemTags": [],
+        "analogs": None,
+        "relatedGoods": None,
+        "featureValues": [],
+        "catalogs": [],
+        "terms": [],
+        "videos": [],
+        "pictures": [],
+        "codes": [],
+        "codeDataJson": None,
+        "prices": [],
+        "remains": [],
+        "documents": [],
+        "documentLinks": [],
+        "packing": [],
+        "parentId": None,
+        "productClassId": None,
+        "parent": None,
+        "linkedGoods": [],
+        "productStatus": None,
+        "productGroup": None,
+        "featureUnionCondition": None,
+        "productStatusId": None,
+        "supplierId": None,
+        "manufacturerId": None,
+        "brandId": None,
+        "countryId": None,
+        "manufacturerSeriesId": None,
+        "featureUnionConditionId": None,
+        "productGroupId": None,
+        "unitId": None,
+        "pictureId": None,
+        "width": None,
+        "height": None,
+        "guaranty": None,
+        "pictureInput": None,
+        "deletePicture": False,
+        "commercePrice": None,
+        "balancesOnGroupsOfWarehouses": None,
+        "manufacturerSiteLink": None,
+        "multiplicitySupplier": None,
+        "multiplicityOrder": None,
+        "minOrderQuantity": None,
+        "productNextArrival": None,
+        "tax": None,
+        "taxId": None,
+        "htHead": None,
+        "htDesc": None,
+        "htKeywords": None,
+        "url": None
     }
     
     # Добавляем размеры если есть
@@ -330,19 +460,25 @@ def prepare_product_data(product, category_obj, root_category):
         try:
             data["length"] = float(str(product["length"]).replace(",", "."))
         except (ValueError, TypeError):
-            pass
+            data["length"] = 0.0
+    else:
+        data["length"] = 0.0
     
     if product.get("volume"):
         try:
             data["volume"] = float(str(product["volume"]).replace(",", "."))
         except (ValueError, TypeError):
-            pass
+            data["volume"] = 0.0
+    else:
+        data["volume"] = 0.0
     
     if product.get("mass"):
         try:
             data["weight"] = float(str(product["mass"]).replace(",", "."))
         except (ValueError, TypeError):
-            pass
+            data["weight"] = 0.0
+    else:
+        data["weight"] = 0.0
     
     return data
 
@@ -364,11 +500,13 @@ async def create_product_in_pim_async(session, token, product_data, max_retries=
                 if response.status >= 400:
                     # Для HTTP 500 пробуем повторить запрос
                     if response.status == 500 and attempt < max_retries - 1:
+                        print(f"      ⚠️  HTTP 500 (попытка {attempt + 1}/{max_retries}), повторяем через {attempt + 1}с...")
                         await asyncio.sleep(1 * (attempt + 1))  # Экспоненциальная задержка
                         continue
                     
                     # Сохраняем полный текст ошибки
                     error_text = text[:500] if text else "Пустой ответ сервера"
+                    print(f"      ❌ HTTP {response.status}: {error_text[:100]}")
                     return {
                         "success": False,
                         "message": f"HTTP {response.status}: {error_text}",
@@ -708,6 +846,18 @@ def main():
                     print(f"   🗺️  Путь категории: {category_path}")
                     print(f"   📋 Хлебные крошки: {product_group}")
                     print(f"   🔢 Код 1С: {code_1c}")
+                    print(f"   📤 Отправляем в PIM:")
+                    print(f"      - header: {product_data.get('header')}")
+                    print(f"      - articul: {product_data.get('articul')}")
+                    print(f"      - catalogId: {product_data.get('catalogId')}")
+                    catalog_obj_data = product_data.get('catalog')
+                    if catalog_obj_data:
+                        print(f"      - catalog.id: {catalog_obj_data.get('id')}")
+                        print(f"      - catalog.header: {catalog_obj_data.get('header')}")
+                    else:
+                        print(f"      - catalog: None")
+                    print(f"      - enabled: {product_data.get('enabled')}")
+                    print(f"      - deleted: {product_data.get('deleted')}")
                     
                     result = await create_product_in_pim_async(session, token, product_data)
                     
@@ -777,6 +927,7 @@ def main():
                             error_msg = f"Товар создан (ID={pim_id}), но не найден при проверке"
                             error_count += 1
                             print(f"   ❌ {error_msg}")
+                            print(f"   🔍 Попробуйте проверить товар вручную: {PIM_API_URL.replace('/api/v1', '')}/product/{pim_id}")
                             errors_log.append({
                                 "product_id": product.get("id"),
                                 "code_1c": product.get("code_1c"),
@@ -785,6 +936,14 @@ def main():
                                 "pim_id": pim_id
                             })
                             return
+                        
+                        # Детальная проверка созданного товара
+                        print(f"   📋 Проверка созданного товара:")
+                        print(f"      - Название: {created_product.get('header', 'N/A')}")
+                        print(f"      - Артикул: {created_product.get('articul', 'N/A')}")
+                        print(f"      - catalogId: {created_product.get('catalogId', 'N/A')}")
+                        print(f"      - enabled: {created_product.get('enabled', 'N/A')}")
+                        print(f"      - deleted: {created_product.get('deleted', 'N/A')}")
                         
                         # Проверка дубликатов после создания
                         if code_1c:
@@ -825,6 +984,7 @@ def main():
                         
                         success_count += 1
                         print(f"   ✅ Создан ID={pim_id}, категория проверена: {created_category_name} (ID: {created_category_id})")
+                        print(f"   🔗 Ссылка на товар: {pim_link}")
                         print(f"   📝 Флаг is_new изменен на False в Supabase")
                     else:
                         error_msg = result.get('message', 'Unknown error')
