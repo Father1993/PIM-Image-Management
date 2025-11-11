@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import requests
+import asyncio
+import aiohttp
 from datetime import datetime
 from supabase import create_client
 from dotenv import load_dotenv
@@ -345,8 +347,70 @@ def prepare_product_data(product, category_obj, root_category):
     return data
 
 
+async def create_product_in_pim_async(session, token, product_data, max_retries=3):
+    """Асинхронное создание товара в PIM через API с retry для HTTP 500"""
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    for attempt in range(max_retries):
+        try:
+            async with session.post(
+                f"{PIM_API_URL}/product/",
+                headers=headers,
+                json=product_data,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                text = await response.text()
+                
+                if response.status >= 400:
+                    # Для HTTP 500 пробуем повторить запрос
+                    if response.status == 500 and attempt < max_retries - 1:
+                        await asyncio.sleep(1 * (attempt + 1))  # Экспоненциальная задержка
+                        continue
+                    
+                    # Сохраняем полный текст ошибки
+                    error_text = text[:500] if text else "Пустой ответ сервера"
+                    return {
+                        "success": False,
+                        "message": f"HTTP {response.status}: {error_text}",
+                        "status": response.status,
+                        "response_text": error_text
+                    }
+                
+                try:
+                    result = await response.json()
+                    return result
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "message": f"Ошибка парсинга JSON: {str(e)}, Response: {text[:500]}",
+                        "response_text": text[:500]
+                    }
+            
+        except asyncio.TimeoutError:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            return {
+                "success": False,
+                "message": f"Таймаут запроса (попытка {attempt + 1}/{max_retries})"
+            }
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            return {
+                "success": False,
+                "message": f"Ошибка запроса: {str(e)}"
+            }
+    
+    return {
+        "success": False,
+        "message": f"Не удалось создать товар после {max_retries} попыток"
+    }
+
+
 def create_product_in_pim(token, product_data):
-    """Создание товара в PIM через API"""
+    """Создание товара в PIM через API (синхронная версия для обратной совместимости)"""
     headers = {"Authorization": f"Bearer {token}"}
     
     try:
@@ -357,14 +421,12 @@ def create_product_in_pim(token, product_data):
             timeout=30
         )
         
-        # Проверяем статус код
         if response.status_code >= 400:
             return {
                 "success": False,
                 "message": f"HTTP {response.status_code}: {response.text[:300]}"
             }
         
-        # Парсим JSON ответ
         try:
             result = response.json()
             return result
@@ -435,8 +497,26 @@ def find_product_by_articul(token, articul, catalog_id=CATALOG_1C_ID):
         return None
 
 
+async def check_product_exists_in_pim_async(session, token, pim_id):
+    """Асинхронная проверка существования товара в PIM по ID"""
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with session.get(
+            f"{PIM_API_URL}/product/{pim_id}",
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data.get("success") and data.get("data"):
+                    return data["data"]
+        return None
+    except Exception:
+        return None
+
+
 def check_product_exists_in_pim(token, pim_id):
-    """Проверка существования товара в PIM по ID"""
+    """Проверка существования товара в PIM по ID (синхронная версия)"""
     headers = {"Authorization": f"Bearer {token}"}
     try:
         response = requests.get(
@@ -509,15 +589,16 @@ def main():
         new_products = response.data
         print(f"✅ Найдено {len(new_products)} новых товаров для создания\n")
         
-        # Проверка дубликатов в Supabase: находим все товары с link_pim по code_1c
-        print("🔍 Проверка дубликатов в Supabase...")
-        all_products = client.table("products").select("code_1c, link_pim, id").execute().data
+        # Проверка дубликатов: находим все товары с link_pim (уже созданные в PIM) по code_1c
+        # Это нужно чтобы не создавать дубликаты - если товар с таким code_1c уже создан в PIM,
+        # мы используем существующий товар вместо создания нового
+        print("🔍 Проверка дубликатов: ищем товары с link_pim по code_1c...")
+        existing_products = client.table("products").select("code_1c, link_pim").not_.is_("link_pim", "null").execute().data
         existing_links = {}  # code_1c -> (pim_id, link_pim)
-        for p in all_products:
+        for p in existing_products:
             code = str(p.get("code_1c", "")).strip()
             link = p.get("link_pim")
             if code and link:
-                # Извлекаем PIM ID из ссылки
                 try:
                     pim_id = int(link.split("/")[-1])
                     # Сохраняем первый найденный товар с таким code_1c
@@ -526,258 +607,288 @@ def main():
                 except (ValueError, IndexError):
                     pass
         
-        duplicates_in_supabase = sum(1 for p in new_products if str(p.get("code_1c", "")).strip() in existing_links)
-        if duplicates_in_supabase > 0:
-            print(f"⚠️  Найдено {duplicates_in_supabase} товаров, которые уже имеют link_pim в Supabase")
+        duplicates_found = sum(1 for p in new_products if str(p.get("code_1c", "")).strip() in existing_links)
+        if duplicates_found > 0:
+            print(f"⚠️  Найдено {duplicates_found} товаров, которые уже созданы в PIM (будут использованы существующие)")
         print(f"✅ Проверка завершена\n")
         
         if not new_products:
             print("✅ Нет новых товаров для создания (is_new=false или отсутствуют)")
             return
         
-        # Создание товаров
+        # Асинхронная обработка товаров
         success_count = 0
         error_count = 0
         
-        for idx, product in enumerate(new_products, 1):
-            try:
-                # Проверка типа данных
-                if not isinstance(product, dict):
-                    raise TypeError(f"Product должен быть dict, получен {type(product)}")
+        async def process_product(session, token, product, idx, total, existing_links, categories_map, categories_by_path, root_category, client, semaphore):
+            """Асинхронная обработка одного товара"""
+            async with semaphore:
+                nonlocal success_count, error_count
                 
-                # Проверка флага is_new
-                if not product.get("is_new", False):
-                    print(f"[{idx}/{len(new_products)}] ⚠️  Пропущен - is_new=false: {product.get('code_1c')}")
-                    continue
-                
-                # Проверка: если уже есть link_pim в Supabase - товар уже создан
-                if product.get("link_pim"):
-                    print(f"[{idx}/{len(new_products)}] ⚠️  Пропущен - уже есть link_pim: {product.get('link_pim')}")
-                    continue
-                
-                # Проверка дубликатов в Supabase по code_1c
-                code_1c = product.get('code_1c', '')
-                if code_1c and code_1c in existing_links:
-                    existing_id, existing_link = existing_links[code_1c]
-                    print(f"[{idx}/{len(new_products)}] ⚠️  ДУБЛИКАТ В SUPABASE!")
-                    print(f"   🔢 Код 1С: {code_1c}")
-                    print(f"   📦 Существующий товар в PIM: ID={existing_id}")
-                    print(f"   🔗 Существующий link_pim: {existing_link}")
-                    print(f"   ⚠️  Используем существующий товар вместо создания нового")
+                try:
+                    # Проверка типа данных
+                    if not isinstance(product, dict):
+                        raise TypeError(f"Product должен быть dict, получен {type(product)}")
                     
-                    # Обновляем Supabase, используя существующий товар
-                    update_product_in_supabase(client, product["id"], existing_id, existing_link)
-                    success_count += 1
-                    print(f"   ✅ Связь с существующим товаром установлена")
-                    continue
-                
-                # Проверка дубликатов в PIM (только если не нашли в Supabase)
-                if code_1c:
-                    print(f"[{idx}/{len(new_products)}] 🔍 Проверяем дубликаты в PIM для кода 1С: {code_1c}...")
-                    existing_product = find_product_by_articul(token, code_1c)
-                    if existing_product:
-                        existing_id = existing_product.get("id")
-                        existing_name = existing_product.get("header", "N/A")
-                        print(f"   ⚠️  ТОВАР УЖЕ СУЩЕСТВУЕТ В PIM!")
-                        print(f"   📦 Существующий товар: {existing_name} (ID: {existing_id})")
-                        print(f"   ⚠️  Пропускаем создание, чтобы избежать дубликата")
-                        
-                        # Обновляем Supabase, используя существующий товар
-                        pim_link = f"{PIM_API_URL.replace('/api/v1', '')}/product/{existing_id}"
-                        update_product_in_supabase(client, product["id"], existing_id, pim_link)
-                        success_count += 1
-                        print(f"   ✅ Связь с существующим товаром установлена в Supabase")
-                        continue
-                    else:
-                        print(f"   ✅ Дубликатов не найдено, создаем новый товар")
-                
-                # Определяем категорию по полному пути хлебных крошек (создаем если не найдена)
-                category_obj = find_category_by_breadcrumbs(
-                    product.get("product_group"),
-                    categories_map,
-                    categories_by_path,
-                    token=token,
-                    root_category=root_category,
-                    debug=True
-                )
-                
-                # Логирование результата поиска категории
-                if category_obj:
-                    category_name = category_obj["header"]
-                    category_id = category_obj["id"]
-                    category_path = category_obj.get("full_path", "N/A")
-                    print(f"      ✅ Категория найдена: {category_name} (ID: {category_id})")
-                else:
-                    category_name = root_category["header"]
-                    category_id = root_category["id"]
-                    category_path = "корневая"
-                    print(f"      ⚠️  Категория не найдена, используется корневая: {category_name} (ID: {category_id})")
-                
-                # Подготовка данных
-                product_data = prepare_product_data(product, category_obj, root_category)
-                
-                # Создание в PIM
-                product_name = product.get('product_name', 'Без имени')
-                code_1c = product.get('code_1c', 'Без кода')
-                product_group = product.get('product_group', 'Не указана')
-                print(f"[{idx}/{len(new_products)}] {product_name[:50]}...")
-                print(f"   📂 Категория: {category_name} (ID: {category_id})")
-                print(f"   🗺️  Путь категории: {category_path}")
-                print(f"   📋 Хлебные крошки: {product_group}")
-                print(f"   🔢 Код 1С: {code_1c}")
-                result = create_product_in_pim(token, product_data)
-                
-                # Отладка: проверяем тип ответа
-                if not isinstance(result, dict):
-                    error_msg = f"API вернул {type(result).__name__} вместо dict: {str(result)[:200]}"
-                    error_count += 1
-                    print(f"   ❌ {error_msg}")
-                    errors_log.append({
-                        "product_id": product.get("id"),
-                        "code_1c": product.get("code_1c"),
-                        "name": product_name,
-                        "error": error_msg,
-                        "result_type": str(type(result)),
-                        "result_value": str(result)[:500]
-                    })
-                    continue
-                
-                if result.get("success"):
-                    # API возвращает data как строку с ID, а не объект
-                    data = result.get("data")
+                    # Проверка флага is_new
+                    if not product.get("is_new", False):
+                        print(f"[{idx}/{total}] ⚠️  Пропущен - is_new=false: {product.get('code_1c')}")
+                        return
                     
-                    # Извлекаем ID товара
-                    if isinstance(data, str):
-                        # data это строка с ID: "28174"
-                        try:
-                            pim_id = int(data)
-                        except (ValueError, TypeError):
-                            error_msg = f"Не удалось преобразовать ID из строки: {data}"
-                            error_count += 1
-                            print(f"   ❌ {error_msg}")
-                            errors_log.append({
-                                "product_id": product.get("id"),
-                                "code_1c": product.get("code_1c"),
-                                "name": product_name,
-                                "error": error_msg,
-                                "result": str(result)[:500]
-                            })
-                            continue
-                    elif isinstance(data, dict):
-                        # Если вдруг вернулся объект
-                        pim_id = data.get("id")
-                        if not pim_id:
-                            error_msg = "В ответе API нет id товара"
-                            error_count += 1
-                            print(f"   ❌ {error_msg}")
-                            errors_log.append({
-                                "product_id": product.get("id"),
-                                "code_1c": product.get("code_1c"),
-                                "name": product_name,
-                                "error": error_msg,
-                                "result": str(result)[:500]
-                            })
-                            continue
-                    else:
-                        error_msg = f"Неожиданный тип data: {type(data).__name__}, значение: {data}"
-                        error_count += 1
-                        print(f"   ❌ {error_msg}")
-                        errors_log.append({
-                            "product_id": product.get("id"),
-                            "code_1c": product.get("code_1c"),
-                            "name": product_name,
-                            "error": error_msg,
-                            "result": str(result)[:500]
-                        })
-                        continue
+                    # Проверка: если у текущего товара уже есть link_pim - он уже создан, пропускаем
+                    if product.get("link_pim"):
+                        print(f"[{idx}/{total}] ⚠️  Пропущен - уже есть link_pim: {product.get('link_pim')}")
+                        return
                     
-                    # Проверка: товар действительно создан в PIM
-                    created_product = check_product_exists_in_pim(token, pim_id)
-                    if not created_product:
-                        error_msg = f"Товар создан (ID={pim_id}), но не найден при проверке"
-                        error_count += 1
-                        print(f"   ❌ {error_msg}")
-                        errors_log.append({
-                            "product_id": product.get("id"),
-                            "code_1c": product.get("code_1c"),
-                            "name": product_name,
-                            "error": error_msg,
-                            "pim_id": pim_id
-                        })
-                        continue
-                    
-                    # КРИТИЧЕСКАЯ ПРОВЕРКА: проверяем, не создался ли дубликат
-                    # Ищем другие товары с таким же артикулом
+                    # Проверка дубликатов в Supabase
                     code_1c = product.get('code_1c', '')
+                    if code_1c and code_1c in existing_links:
+                        existing_id, existing_link = existing_links[code_1c]
+                        print(f"[{idx}/{total}] ⚠️  ДУБЛИКАТ ОБНАРУЖЕН!")
+                        print(f"   🔢 Код 1С: {code_1c}")
+                        print(f"   📦 Товар с таким code_1c уже создан в PIM: ID={existing_id}")
+                        print(f"   🔗 Существующий link_pim: {existing_link}")
+                        print(f"   ⚠️  Используем существующий товар вместо создания нового")
+                        
+                        update_product_in_supabase(client, product["id"], existing_id, existing_link)
+                        success_count += 1
+                        print(f"   ✅ Связь с существующим товаром установлена")
+                        return
+                    
+                    # Проверка дубликатов в PIM (только если не нашли в Supabase)
                     if code_1c:
-                        # Проверяем в Supabase - есть ли другие товары с таким code_1c и link_pim
-                        duplicate_check = client.table("products").select("id, link_pim").eq("code_1c", code_1c).neq("id", product["id"]).execute()
-                        duplicates = [p for p in duplicate_check.data if p.get("link_pim")]
-                        if duplicates:
-                            print(f"   ⚠️  ВНИМАНИЕ: Найдены другие товары в Supabase с таким же code_1c и link_pim!")
-                            for dup in duplicates:
-                                print(f"      - ID: {dup.get('id')}, link_pim: {dup.get('link_pim')}")
+                        print(f"[{idx}/{total}] 🔍 Проверяем дубликаты в PIM для кода 1С: {code_1c}...")
+                        existing_product = find_product_by_articul(token, code_1c)
+                        if existing_product:
+                            existing_id = existing_product.get("id")
+                            existing_name = existing_product.get("header", "N/A")
+                            print(f"   ⚠️  ТОВАР УЖЕ СУЩЕСТВУЕТ В PIM!")
+                            print(f"   📦 Существующий товар: {existing_name} (ID: {existing_id})")
+                            print(f"   ⚠️  Пропускаем создание, чтобы избежать дубликата")
+                            
+                            pim_link = f"{PIM_API_URL.replace('/api/v1', '')}/product/{existing_id}"
+                            update_product_in_supabase(client, product["id"], existing_id, pim_link)
+                            success_count += 1
+                            print(f"   ✅ Связь с существующим товаром установлена в Supabase")
+                            return
+                        else:
+                            print(f"   ✅ Дубликатов не найдено, создаем новый товар")
                     
-                    # Проверка категории созданного товара
-                    created_category_id = created_product.get("catalogId")
-                    expected_category_id = category_obj["id"] if category_obj else root_category["id"]
+                    # Определяем категорию (синхронно, так как нужна синхронизация)
+                    category_obj = find_category_by_breadcrumbs(
+                        product.get("product_group"),
+                        categories_map,
+                        categories_by_path,
+                        token=token,
+                        root_category=root_category,
+                        debug=True
+                    )
                     
-                    # Получаем название категории для вывода
-                    created_category_name = "N/A"
-                    if created_product.get("catalog"):
-                        created_category_name = created_product["catalog"].get("header", "N/A")
-                    elif created_product.get("catalogHeader"):
-                        created_category_name = created_product.get("catalogHeader")
+                    # Логирование результата поиска категории
+                    if category_obj:
+                        category_name = category_obj["header"]
+                        category_id = category_obj["id"]
+                        category_path = category_obj.get("full_path", "N/A")
+                        print(f"      ✅ Категория найдена: {category_name} (ID: {category_id})")
+                    else:
+                        category_name = root_category["header"]
+                        category_id = root_category["id"]
+                        category_path = "корневая"
+                        print(f"      ⚠️  Категория не найдена, используется корневая: {category_name} (ID: {category_id})")
                     
-                    if created_category_id != expected_category_id:
-                        error_msg = f"Категория не совпадает! Ожидалось: {expected_category_id}, получено: {created_category_id}"
+                    # Подготовка данных
+                    product_data = prepare_product_data(product, category_obj, root_category)
+                    
+                    # Создание в PIM (асинхронно)
+                    product_name = product.get('product_name', 'Без имени')
+                    code_1c = product.get('code_1c', 'Без кода')
+                    product_group = product.get('product_group', 'Не указана')
+                    print(f"[{idx}/{total}] {product_name[:50]}...")
+                    print(f"   📂 Категория: {category_name} (ID: {category_id})")
+                    print(f"   🗺️  Путь категории: {category_path}")
+                    print(f"   📋 Хлебные крошки: {product_group}")
+                    print(f"   🔢 Код 1С: {code_1c}")
+                    
+                    result = await create_product_in_pim_async(session, token, product_data)
+                    
+                    # Проверка результата
+                    if not isinstance(result, dict):
+                        error_msg = f"API вернул {type(result).__name__} вместо dict: {str(result)[:200]}"
                         error_count += 1
-                        print(f"   ⚠️  {error_msg}")
+                        print(f"   ❌ {error_msg}")
                         errors_log.append({
                             "product_id": product.get("id"),
                             "code_1c": product.get("code_1c"),
                             "name": product_name,
                             "error": error_msg,
-                            "expected_category": expected_category_id,
-                            "actual_category": created_category_id,
-                            "pim_id": pim_id
+                            "result_type": str(type(result)),
+                            "result_value": str(result)[:500]
                         })
-                        # Не обновляем Supabase, если категория неправильная
-                        continue
+                        return
                     
-                    pim_link = f"{PIM_API_URL.replace('/api/v1', '')}/product/{pim_id}"
-                    
-                    # Обновление в Supabase: устанавливаем is_new=False после успешного создания
-                    update_product_in_supabase(client, product["id"], pim_id, pim_link)
-                    
-                    success_count += 1
-                    print(f"   ✅ Создан ID={pim_id}, категория проверена: {created_category_name} (ID: {created_category_id})")
-                    print(f"   📝 Флаг is_new изменен на False в Supabase")
-                else:
-                    error_msg = result.get('message', 'Unknown error')
+                    if result.get("success"):
+                        data = result.get("data")
+                        
+                        if isinstance(data, str):
+                            try:
+                                pim_id = int(data)
+                            except (ValueError, TypeError):
+                                error_msg = f"Не удалось преобразовать ID из строки: {data}"
+                                error_count += 1
+                                print(f"   ❌ {error_msg}")
+                                errors_log.append({
+                                    "product_id": product.get("id"),
+                                    "code_1c": product.get("code_1c"),
+                                    "name": product_name,
+                                    "error": error_msg,
+                                    "result": str(result)[:500]
+                                })
+                                return
+                        elif isinstance(data, dict):
+                            pim_id = data.get("id")
+                            if not pim_id:
+                                error_msg = "В ответе API нет id товара"
+                                error_count += 1
+                                print(f"   ❌ {error_msg}")
+                                errors_log.append({
+                                    "product_id": product.get("id"),
+                                    "code_1c": product.get("code_1c"),
+                                    "name": product_name,
+                                    "error": error_msg,
+                                    "result": str(result)[:500]
+                                })
+                                return
+                        else:
+                            error_msg = f"Неожиданный тип data: {type(data).__name__}, значение: {data}"
+                            error_count += 1
+                            print(f"   ❌ {error_msg}")
+                            errors_log.append({
+                                "product_id": product.get("id"),
+                                "code_1c": product.get("code_1c"),
+                                "name": product_name,
+                                "error": error_msg,
+                                "result": str(result)[:500]
+                            })
+                            return
+                        
+                        # Проверка существования товара (асинхронно)
+                        created_product = await check_product_exists_in_pim_async(session, token, pim_id)
+                        if not created_product:
+                            error_msg = f"Товар создан (ID={pim_id}), но не найден при проверке"
+                            error_count += 1
+                            print(f"   ❌ {error_msg}")
+                            errors_log.append({
+                                "product_id": product.get("id"),
+                                "code_1c": product.get("code_1c"),
+                                "name": product_name,
+                                "error": error_msg,
+                                "pim_id": pim_id
+                            })
+                            return
+                        
+                        # Проверка дубликатов после создания
+                        if code_1c:
+                            duplicate_check = client.table("products").select("id, link_pim").eq("code_1c", code_1c).neq("id", product["id"]).execute()
+                            duplicates = [p for p in duplicate_check.data if p.get("link_pim")]
+                            if duplicates:
+                                print(f"   ⚠️  ВНИМАНИЕ: Найдены другие товары в Supabase с таким же code_1c и link_pim!")
+                                for dup in duplicates:
+                                    print(f"      - ID: {dup.get('id')}, link_pim: {dup.get('link_pim')}")
+                        
+                        # Проверка категории
+                        created_category_id = created_product.get("catalogId")
+                        expected_category_id = category_obj["id"] if category_obj else root_category["id"]
+                        
+                        created_category_name = "N/A"
+                        if created_product.get("catalog"):
+                            created_category_name = created_product["catalog"].get("header", "N/A")
+                        elif created_product.get("catalogHeader"):
+                            created_category_name = created_product.get("catalogHeader")
+                        
+                        if created_category_id != expected_category_id:
+                            error_msg = f"Категория не совпадает! Ожидалось: {expected_category_id}, получено: {created_category_id}"
+                            error_count += 1
+                            print(f"   ⚠️  {error_msg}")
+                            errors_log.append({
+                                "product_id": product.get("id"),
+                                "code_1c": product.get("code_1c"),
+                                "name": product_name,
+                                "error": error_msg,
+                                "expected_category": expected_category_id,
+                                "actual_category": created_category_id,
+                                "pim_id": pim_id
+                            })
+                            return
+                        
+                        pim_link = f"{PIM_API_URL.replace('/api/v1', '')}/product/{pim_id}"
+                        update_product_in_supabase(client, product["id"], pim_id, pim_link)
+                        
+                        success_count += 1
+                        print(f"   ✅ Создан ID={pim_id}, категория проверена: {created_category_name} (ID: {created_category_id})")
+                        print(f"   📝 Флаг is_new изменен на False в Supabase")
+                    else:
+                        error_msg = result.get('message', 'Unknown error')
+                        error_count += 1
+                        print(f"   ❌ {error_msg}")
+                        
+                        # Сохраняем детальную информацию об ошибке
+                        error_data = {
+                            "product_id": product.get("id"),
+                            "code_1c": product.get("code_1c"),
+                            "name": product_name,
+                            "error": error_msg,
+                            "status": result.get("status"),
+                            "response_text": result.get("response_text", ""),
+                            "product_data_keys": list(product_data.keys()) if isinstance(product_data, dict) else None
+                        }
+                        
+                        # Добавляем данные товара для отладки (только ключевые поля)
+                        if isinstance(product_data, dict):
+                            error_data["articul"] = product_data.get("articul")
+                            error_data["catalog_id"] = product_data.get("catalogId")
+                            error_data["header"] = product_data.get("header", "")[:100]
+                        
+                        errors_log.append(error_data)
+                        
+                except Exception as e:
+                    import traceback
+                    error_msg = str(e)
+                    error_traceback = traceback.format_exc()
                     error_count += 1
-                    print(f"   ❌ {error_msg}")
+                    print(f"   ❌ {error_msg[:100]}")
                     errors_log.append({
                         "product_id": product.get("id"),
                         "code_1c": product.get("code_1c"),
-                        "name": product_name,
+                        "name": product.get('product_name', 'Без имени'),
                         "error": error_msg,
-                        "result": str(result)[:500]
+                        "traceback": error_traceback
                     })
-                    
-            except Exception as e:
-                import traceback
-                error_msg = str(e)
-                error_traceback = traceback.format_exc()
-                error_count += 1
-                print(f"   ❌ {error_msg[:100]}")
-                errors_log.append({
-                    "product_id": product.get("id"),
-                    "code_1c": product.get("code_1c"),
-                    "name": product.get('product_name', 'Без имени'),
-                    "error": error_msg,
-                    "traceback": error_traceback
-                })
+        
+        # Асинхронная обработка батчами
+        async def process_batch(session, token, batch, batch_start_idx, existing_links, categories_map, categories_by_path, root_category, client):
+            """Обработка батча товаров"""
+            semaphore = asyncio.Semaphore(5)  # Уменьшено до 5 параллельных запросов для стабильности
+            tasks = [
+                process_product(session, token, product, batch_start_idx + idx, len(new_products), existing_links, categories_map, categories_by_path, root_category, client, semaphore)
+                for idx, product in enumerate(batch)
+            ]
+            await asyncio.gather(*tasks)
+            # Небольшая задержка между батчами для снижения нагрузки на сервер
+            await asyncio.sleep(0.5)
+        
+        # Запуск асинхронной обработки
+        async def run_async():
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)  # Ограничиваем соединения
+            async with aiohttp.ClientSession(connector=connector) as session:
+                batch_size = 5  # Уменьшен размер батча для стабильности
+                total_batches = (len(new_products) + batch_size - 1) // batch_size
+                
+                for batch_num in range(total_batches):
+                    batch_start_idx = batch_num * batch_size + 1
+                    batch = new_products[batch_num * batch_size:(batch_num + 1) * batch_size]
+                    await process_batch(session, token, batch, batch_start_idx, existing_links, categories_map, categories_by_path, root_category, client)
+        
+        asyncio.run(run_async())
         
         print(f"\n🎉 Готово!")
         print(f"   ✅ Успешно создано: {success_count}")
