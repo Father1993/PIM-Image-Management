@@ -7,6 +7,7 @@
 
 import os
 import json
+import uuid
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -27,11 +28,12 @@ def format_list_to_string(items):
 
 def prepare_product(product_json):
     """Подготавливает данные товара для вставки в базу"""
-    code = product_json.get("Code", "").strip()
+    code = str(product_json.get("Code", "")).strip()
     if not code:
         return None
 
     return {
+        "uid": str(uuid.uuid4()),
         "code_1c": code,
         "product_name": product_json.get("Name", "").strip() or None,
         "barcode": format_list_to_string(product_json.get("Barcode", [])),
@@ -50,7 +52,8 @@ def main():
         # Получаем все существующие code_1c из таблицы products
         print("📊 Загрузка существующих товаров из базы...")
         response = client.table("products").select("code_1c").execute()
-        existing_codes = {item.get("code_1c") for item in (response.data or []) if item.get("code_1c")}
+        # Нормализуем коды (убираем пробелы, приводим к строке)
+        existing_codes = {str(item.get("code_1c", "")).strip() for item in (response.data or []) if item.get("code_1c")}
         print(f"✅ Найдено {len(existing_codes)} товаров в базе")
 
         # Загружаем JSON файл
@@ -61,14 +64,26 @@ def main():
 
         # Фильтруем новые товары
         new_products = []
+        without_code = 0
+        already_exists = 0
+        
         for product_json in products_json:
-            code = product_json.get("Code", "").strip()
-            if code and code not in existing_codes:
-                prepared = prepare_product(product_json)
-                if prepared:
-                    new_products.append(prepared)
+            code = str(product_json.get("Code", "")).strip()
+            if not code:
+                without_code += 1
+                continue
+            if code in existing_codes:
+                already_exists += 1
+                continue
+            prepared = prepare_product(product_json)
+            if prepared:
+                new_products.append(prepared)
 
-        print(f"🆕 Найдено {len(new_products)} новых товаров для добавления")
+        print(f"\n📊 Статистика обработки:")
+        print(f"   Всего товаров в JSON: {len(products_json)}")
+        print(f"   Товаров без кода (Code): {without_code}")
+        print(f"   Товаров уже есть в базе: {already_exists}")
+        print(f"   🆕 Новых товаров для добавления: {len(new_products)}")
 
         if not new_products:
             print("✅ Все товары уже есть в базе")
