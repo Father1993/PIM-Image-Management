@@ -129,6 +129,9 @@ async def fetch_catalog21_products(token):
     scroll_id = None
     total_fetched = 0
     batch_num = 0
+    empty_responses_in_row = 0  # Счетчик пустых ответов подряд
+    PAUSE_AFTER_BATCHES = 255  # Пауза после каждых N запросов
+    PAUSE_DURATION = 10  # Длительность паузы в секундах
     
     # Инициализируем один HTTP клиент для всех запросов
     # Это позволяет переиспользовать соединения вместо создания нового для каждого запроса
@@ -142,17 +145,24 @@ async def fetch_catalog21_products(token):
             batch_num += 1
             print(f"[📥] Загрузка партии #{batch_num}...", end="", flush=True)
             
-            # Формируем URL в зависимости от наличия scroll_id
-            if scroll_id:
-                url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}&scrollId={scroll_id}"
-            else:
-                # Начальный запрос для каталога ID 21 без scroll_id
-                url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}"
+            # Пауза каждые N запросов для предотвращения ConnectionTerminated
+            if batch_num > PAUSE_AFTER_BATCHES and (batch_num - 1) % PAUSE_AFTER_BATCHES == 0:
+                print(f"\n[⏸️] Пауза {PAUSE_DURATION} секунд после {PAUSE_AFTER_BATCHES} запросов...")
+                await asyncio.sleep(PAUSE_DURATION)
+                print(f"[▶️] Продолжаем загрузку...")
             
             try:
                 # Выполняем асинхронный GET-запрос с повторными попытками
+                # URL формируем внутри цикла, чтобы использовать актуальный scroll_id
                 for attempt in range(MAX_RETRIES):
                     try:
+                        # Формируем URL в зависимости от наличия scroll_id
+                        if scroll_id:
+                            url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}&scrollId={scroll_id}"
+                        else:
+                            # Начальный запрос для каталога ID 21 без scroll_id
+                            url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}"
+                        
                         response = await client.get(url)
                         break  # Если запрос успешен, выходим из цикла повторных попыток
                     except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -183,6 +193,7 @@ async def fetch_catalog21_products(token):
                 response_data = data.get("data", {})
                 products = response_data.get("products", [])  # Основное поле с товарами
                 new_scroll_id = response_data.get("scrollId")
+                total = response_data.get("total", 0)  # Общее количество товаров
                 
                 # Если вдруг используется другое поле (как в некоторых скриптах)
                 if not products:
@@ -192,16 +203,39 @@ async def fetch_catalog21_products(token):
                     all_products.extend(products)
                     count = len(products)
                     total_fetched += count
-                    print(f" [✅] Получено {count} товаров (всего: {total_fetched})")
+                    empty_responses_in_row = 0  # Сбрасываем счетчик при успешном ответе
+                    print(f" [✅] Получено {count} товаров (всего: {total_fetched}" + 
+                          (f" из {total})" if total > 0 else ")"))
+                    scroll_id = new_scroll_id
                 else:
+                    empty_responses_in_row += 1
+                    # Если 3 пустых ответа подряд - прекращаем (защита от бесконечного цикла)
+                    if empty_responses_in_row >= 3:
+                        print(f" [⚠️] Получено {empty_responses_in_row} пустых ответов подряд. Завершаем.")
+                        if total > 0 and total_fetched < total:
+                            print(f" [⚠️] Загружено {total_fetched} из {total}. Возможна потеря данных.")
+                        break
+                    
+                    # Если нет товаров, но есть total и scroll_id - пробуем еще раз
+                    if total > 0 and total_fetched < total and new_scroll_id:
+                        print(f" [⚠️] Пустой ответ #{empty_responses_in_row}, но total={total}, загружено={total_fetched}. Пробуем еще раз...")
+                        scroll_id = new_scroll_id
+                        continue
+                    
+                    # Если нет товаров - завершаем (согласно документации API)
                     print(" [✅] Нет больше товаров")
                     break
                 
-                # Обновляем scroll_id для следующего запроса
-                scroll_id = new_scroll_id
+                # Если загружено все товары согласно total
+                if total > 0 and total_fetched >= total:
+                    print(f" [✅] Загружено все ({total_fetched} из {total})")
+                    break
                 
-                # Если нет нового scroll_id, значит больше нет данных
+                # Если нет scroll_id для следующего запроса - завершаем
                 if not new_scroll_id:
+                    # Но проверяем total, может быть мы не все загрузили
+                    if total > 0 and total_fetched < total:
+                        print(f" [⚠️] Нет scroll_id, но загружено {total_fetched} из {total}. Возможна потеря данных.")
                     print("[🏁] Достигнут конец списка товаров")
                     break
                 
