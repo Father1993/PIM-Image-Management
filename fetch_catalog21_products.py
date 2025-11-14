@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Скрипт для выгрузки всех товаров из Compo PIM API с использованием scroll метода
+Скрипт для выгрузки всех товаров из каталога ID 21 из Compo PIM API
+с использованием scroll метода и httpx для асинхронных запросов
 Сохраняет все товары в JSON файл
 
 ОПТИМИЗАЦИИ:
@@ -37,6 +38,9 @@ load_dotenv()
 PIM_API_URL = os.getenv("PIM_API_URL", "https://pim.uroven.pro/api/v1")
 PIM_LOGIN = os.getenv("PIM_LOGIN")
 PIM_PASSWORD = os.getenv("PIM_PASSWORD")
+
+# ID каталога
+CATALOG_ID = 21  # Каталог ID 21
 
 # Настройки httpx клиента
 HTTPX_TIMEOUT = 60.0  # Таймаут для запросов в секундах
@@ -103,9 +107,9 @@ async def authenticate():
                     raise
 
 
-async def fetch_all_products_scroll(token):
+async def fetch_catalog21_products(token):
     """
-    Асинхронное получение всех товаров с использованием scroll API
+    Асинхронное получение всех товаров из каталога ID 21 с использованием scroll API
     
     Args:
         token (str): Токен авторизации
@@ -118,7 +122,7 @@ async def fetch_all_products_scroll(token):
         httpx.RequestError: При проблемах с подключением
         Exception: При ошибке в ответе API
     """
-    print("[🔄] Начинаем загрузку всех товаров через scroll API...")
+    print(f"[🔄] Начинаем загрузку всех товаров из каталога ID {CATALOG_ID}...")
     
     headers = {"Authorization": f"Bearer {token}"}
     all_products = []
@@ -140,9 +144,10 @@ async def fetch_all_products_scroll(token):
             
             # Формируем URL в зависимости от наличия scroll_id
             if scroll_id:
-                url = f"{PIM_API_URL}/product/scroll/?scrollId={scroll_id}"
+                url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}&scrollId={scroll_id}"
             else:
-                url = f"{PIM_API_URL}/product/scroll"
+                # Начальный запрос для каталога ID 21 без scroll_id
+                url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_ID}"
             
             try:
                 # Выполняем асинхронный GET-запрос с повторными попытками
@@ -225,9 +230,9 @@ def save_products_to_json(products, filename=None):
     """
     if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"all_pim_products_{timestamp}.json"
+        filename = f"catalog21_products_{timestamp}.json"
     
-    print(f"[💾] Сохраняем {len(products)} товаров в файл: {filename}")
+    print(f"[💾] Сохраняем {len(products)} товаров из каталога ID {CATALOG_ID} в файл: {filename}")
     
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -238,7 +243,7 @@ def save_products_to_json(products, filename=None):
         print(f"[❌] Ошибка при сохранении в JSON: {e}")
         # Попробуем сохранить в другой файл с префиксом recovery
         try:
-            recovery_filename = f"recovery_products_{timestamp}.json"
+            recovery_filename = f"recovery_catalog21_{timestamp}.json"
             print(f"[🔄] Пытаемся сохранить в файл восстановления: {recovery_filename}")
             with open(recovery_filename, 'w', encoding='utf-8') as f:
                 json.dump(products, f, ensure_ascii=False, indent=2)
@@ -256,8 +261,9 @@ async def main_async():
     Координирует процесс авторизации, загрузки товаров и сохранения их в файл.
     Обрабатывает исключения и выводит информацию о прогрессе.
     """
-    print("[📦] Скрипт выгрузки всех товаров из Compo PIM API")
-    print(f"🔗 API URL: {PIM_API_URL}\n")
+    print("[📦] Скрипт выгрузки всех товаров из каталога ID 21 из Compo PIM API")
+    print(f"🔗 API URL: {PIM_API_URL}")
+    print(f"📚 Каталог ID: {CATALOG_ID}\n")
     
     # Проверяем наличие необходимых переменных окружения
     if not all([PIM_LOGIN, PIM_PASSWORD]):
@@ -268,18 +274,18 @@ async def main_async():
         # Авторизация
         token = await authenticate()
         
-        # Загрузка всех товаров
-        products = await fetch_all_products_scroll(token)
+        # Загрузка товаров из каталога ID 21
+        products = await fetch_catalog21_products(token)
         
         if products:
-            print(f"\n📊 Всего загружено товаров: {len(products)}")
+            print(f"\n📊 Всего загружено товаров из каталога ID {CATALOG_ID}: {len(products)}")
             
             # Сохранение в JSON
             filename = save_products_to_json(products)
             
-            print(f"\n🎉 Завершено! Товары сохранены в файл: {filename}")
+            print(f"\n🎉 Завершено! Товары из каталога ID {CATALOG_ID} сохранены в файл: {filename}")
         else:
-            print("\n❌ Не удалось загрузить товары")
+            print(f"\n❌ Не удалось загрузить товары из каталога ID {CATALOG_ID}")
     
     except httpx.RequestError as e:
         # Ошибки подключения: таймауты, проблемы с DNS и т.д.
