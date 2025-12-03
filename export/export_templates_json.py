@@ -20,8 +20,9 @@ PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 
 def authenticate():
     """Авторизация в PIM API через requests (проверенный способ)"""
+    base_url = PIM_API_URL.rstrip('/')
     # Пробуем оба варианта URL
-    for url in [f"{PIM_API_URL}/sign-in/", f"{PIM_API_URL}/api/v1/sign-in/"]:
+    for url in [f"{base_url}/sign-in/", f"{base_url}/api/v1/sign-in/"]:
         try:
             response = requests.post(
                 url,
@@ -39,16 +40,13 @@ async def get_template(client, token, template_id, semaphore):
     async with semaphore:
         headers = {"Authorization": f"Bearer {token}"}
         try:
-            response = await client.get(
-                f"{PIM_API_URL}/api/v1/template/{template_id}",
-                headers=headers,
-                timeout=30
-            )
+            url = f"{PIM_API_URL.rstrip('/')}/template/{template_id}"
+            response = await client.get(url, headers=headers, timeout=30)
             if response.status_code == 200:
                 data = response.json()
                 return template_id, data.get("data") if data.get("success") else None
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️ Ошибка для ID={template_id}: {e}")
         return template_id, None
 
 
