@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PIM_API_URL = os.getenv("PRODUCT_BASE")
-PIM_LOGIN = os.getenv("LOGIN_TEST")
-PIM_PASSWORD = os.getenv("PASSWORD_TEST")
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 
 
 async def get_pim_token(session):

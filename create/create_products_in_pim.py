@@ -9,6 +9,7 @@ import os
 import asyncio
 import aiohttp
 import time
+import json
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -16,11 +17,11 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-PIM_API_URL = os.getenv("PRODUCT_BASE")
-PIM_LOGIN = os.getenv("LOGIN_TEST")
-PIM_PASSWORD = os.getenv("PASSWORD_TEST")
+PIM_API_URL = os.getenv("PIM_API_URL")
+PIM_LOGIN = os.getenv("PIM_LOGIN")
+PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 CATALOG_1C_ID = 22
-TEST_LIMIT = 19110  # Тестовый запуск на 5 товаров
+TEST_LIMIT = 19100  # Тестовый запуск на 5 товаров
 
 
 def normalize_name(name):
@@ -78,7 +79,7 @@ async def load_categories(session, token):
         return categories_by_path, root_category
 
 
-async def create_category(session, token, header, parent_id):
+async def create_category(session, token, header, parent_id, is_last_level=False):
     """Создание категории в PIM"""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     data = {
@@ -87,7 +88,7 @@ async def create_category(session, token, header, parent_id):
         "header": header,
         "enabled": True,
         "deleted": False,
-        "lastLevel": True,
+        "lastLevel": is_last_level,
         "pos": 500
     }
     
@@ -103,21 +104,25 @@ async def ensure_category_path(session, token, groups, categories_by_path, root_
     if not groups or not any(groups):
         return None
     
+    # Фильтруем пустые группы и находим последний непустой индекс
+    non_empty_groups = [(idx, name) for idx, name in enumerate(groups) if name and name.strip()]
+    if not non_empty_groups:
+        return None
+    
     current_parent_id = root_category["id"]
     current_path = normalize_name(root_category["header"])
+    last_idx = non_empty_groups[-1][0]  # Индекс последнего непустого элемента
     
-    for group_name in groups:
-        if not group_name or not group_name.strip():
-            continue
-        
+    for idx, group_name in non_empty_groups:
         normalized = normalize_name(group_name)
         next_path = f"{current_path} / {normalized}"
+        is_last = (idx == last_idx)  # Это последний уровень?
         
         if next_path in categories_by_path:
             current_parent_id = categories_by_path[next_path]["id"]
             current_path = next_path
         else:
-            if await create_category(session, token, group_name, current_parent_id):
+            if await create_category(session, token, group_name, current_parent_id, is_last_level=is_last):
                 await asyncio.sleep(1)
                 new_categories, _ = await load_categories(session, token)
                 categories_by_path.update(new_categories)
@@ -227,93 +232,44 @@ def prepare_product_data(product, category_obj, root_category):
     }
 
 
-async def load_all_pim_products(session, token):
-    """Загрузка всех товаров из PIM один раз для быстрого поиска"""
-    headers = {"Authorization": f"Bearer {token}"}
-    articul_to_id = {}
-    scroll_id = None
-    page = 0
-    
-    print("📥 Загрузка существующих товаров из PIM для проверки...")
-    
-    try:
-        while True:
-            page += 1
-            if scroll_id:
-                url = f"{PIM_API_URL}/product/scroll/?scrollId={scroll_id}&catalogId={CATALOG_1C_ID}"
-            else:
-                url = f"{PIM_API_URL}/product/scroll?catalogId={CATALOG_1C_ID}"
-            
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    break
-                
-                data = await response.json()
-                if not data.get("success"):
-                    break
-                
-                scroll_data = data.get("data", {})
-                products = scroll_data.get("products", [])
-                
-                if not products:
-                    products = scroll_data.get("productElasticDtos", [])
-                
-                if not products:
-                    break
-                
-                # Создаем словарь articul -> id
-                for p in products:
-                    articul = p.get("articul")
-                    if articul:
-                        articul_str = str(articul).strip()
-                        if articul_str:
-                            articul_to_id[articul_str] = p.get("id")
-                
-                if page % 10 == 0:
-                    print(f"   Загружено страниц: {page}, найдено товаров: {len(articul_to_id)}")
-                
-                scroll_id = scroll_data.get("scrollId")
-                if not scroll_id:
-                    break
-        
-        print(f"✅ Загружено {len(articul_to_id)} существующих товаров\n")
-        return articul_to_id
-    except Exception as e:
-        print(f"⚠️  Ошибка загрузки товаров: {e}")
-        return {}
-
-
-async def create_product_in_pim(session, token_ref, product, category_obj, root_category, pim_products_map):
+async def create_product_in_pim(session, token_ref, product, category_obj, root_category):
     """Создает товар в PIM с автоматическим обновлением токена при 403"""
     code_1c = product.get("code_1c")
-    
-    # Проверяем существование товара по code_1c в загруженном словаре
-    if code_1c:
-        code_1c_str = str(code_1c).strip()
-        existing_id = pim_products_map.get(code_1c_str)
-        if existing_id:
-            return existing_id
+    code_1c_str = str(code_1c).strip() if code_1c else None
+    display_code = code_1c_str or product.get('article') or 'N/A'
     
     product_data = prepare_product_data(product, category_obj, root_category)
     token = token_ref[0]
     
     async def make_request(token):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with session.post(f"{PIM_API_URL}/product/", json=product_data, headers=headers) as response:
+        async with session.post(f"{PIM_API_URL}/product/rapid/", json=product_data, headers=headers) as response:
             status = response.status
-            if status == 200:
-                data = await response.json()
-                if data.get("success"):
-                    result_data = data.get("data")
-                    if isinstance(result_data, str):
-                        try:
-                            return int(result_data), None
-                        except (ValueError, TypeError):
-                            pass
-                    elif isinstance(result_data, dict):
-                        return result_data.get("id"), None
             text = await response.text()
-            return None, (status, text)
+            
+            if status == 200:
+                try:
+                    data = await response.json() if text else {}
+                    if data.get("success"):
+                        result_data = data.get("data")
+                        if isinstance(result_data, str):
+                            try:
+                                return int(result_data), None
+                            except (ValueError, TypeError):
+                                pass
+                        elif isinstance(result_data, dict):
+                            return result_data.get("id"), None
+                except Exception as e:
+                    return None, (status, f"Ошибка парсинга ответа: {e}, текст: {text[:500]}")
+            
+            # Детальное логирование ошибки
+            try:
+                error_data = await response.json() if text else {}
+                error_message = error_data.get("message", "") or error_data.get("errors", "") or text[:500]
+            except:
+                error_message = text[:500] if text else "Пустой ответ"
+            
+            return None, (status, error_message)
     
     pim_id, error = await make_request(token)
     if pim_id:
@@ -330,7 +286,17 @@ async def create_product_in_pim(session, token_ref, product, category_obj, root_
                 return pim_id
     
     if error:
-        print(f"❌ Ошибка создания товара {articul}: {error[0]} - {error[1][:200]}")
+        print(f"❌ Ошибка создания товара {display_code}:")
+        print(f"   Статус: {error[0]}")
+        print(f"   Сообщение: {error[1]}")
+        print(f"   Товар: {product.get('product_name', 'N/A')}")
+        print(f"   Категория ID: {product_data.get('catalogId', 'N/A')}")
+        print(f"   URL: {PIM_API_URL}/product/")
+        print(f"   Данные запроса (JSON):")
+        try:
+            print(json.dumps(product_data, ensure_ascii=False, indent=2)[:1000])
+        except:
+            print("   [Не удалось сериализовать данные]")
     return None
 
 
@@ -359,20 +325,16 @@ async def main():
             
             print("📂 Загрузка категорий из PIM...")
             categories_by_path, root_category = await load_categories(session, token)
-            print(f"✅ Загружено {len(categories_by_path)} категорий")
-            
-            # Загружаем все существующие товары один раз для быстрой проверки
-            pim_products_map = await load_all_pim_products(session, token)
+            print(f"✅ Загружено {len(categories_by_path)} категорий\n")
             
             success = 0
             failed = 0
-            skipped = 0
             token_ref = [token]  # Список для передачи по ссылке
             token_time = time.time()
             start_time = time.time()
             
             for idx, product in enumerate(products, 1):
-                # Обновляем токен каждые 50 минут (3000 секунд)
+                # Обновляем токен каждые 50 минут (3000 секунд) - токен живет 1 час
                 if time.time() - token_time > 3000:
                     print("🔄 Профилактическое обновление токена...")
                     new_token = await get_pim_token(session)
@@ -399,48 +361,32 @@ async def main():
                     category_obj = root_category
                 
                 code_1c = product.get('code_1c')
-                code_1c_str = str(code_1c).strip() if code_1c else None
+                display_code = str(code_1c).strip() if code_1c else product.get('article') or 'N/A'
                 
-                # Проверяем существование товара в загруженном словаре
-                if code_1c_str and code_1c_str in pim_products_map:
-                    existing_id = pim_products_map[code_1c_str]
-                    skipped += 1
-                    # Обновляем флаг push_to_pim для пропущенных товаров
-                    try:
-                        supabase.table("new_onec_products").update({"push_to_pim": True}).eq("id", product.get("id")).execute()
-                    except Exception as e:
-                        print(f"⚠️  Ошибка обновления флага для товара {code_1c}: {e}")
-                    print(f"📝 [{idx}/{len(products)}] ⏭️  Товар {code_1c} уже существует → PIM ID: {existing_id}")
-                    continue
-                
-                pim_id = await create_product_in_pim(session, token_ref, product, category_obj, root_category, pim_products_map)
+                pim_id = await create_product_in_pim(session, token_ref, product, category_obj, root_category)
                 
                 if pim_id:
                     success += 1
-                    # Добавляем в словарь для последующих проверок
-                    if code_1c_str:
-                        pim_products_map[code_1c_str] = pim_id
-                    
                     # Обновляем флаг push_to_pim в Supabase
                     try:
                         supabase.table("new_onec_products").update({"push_to_pim": True}).eq("id", product.get("id")).execute()
                     except Exception as e:
-                        print(f"⚠️  Ошибка обновления флага для товара {code_1c}: {e}")
+                        print(f"⚠️  Ошибка обновления флага для товара {display_code}: {e}")
                     
-                    print(f"📝 [{idx}/{len(products)}] ✅ Товар {code_1c} → PIM ID: {pim_id}")
+                    print(f"📝 [{idx}/{len(products)}] ✅ Товар {display_code} → PIM ID: {pim_id}")
                 else:
                     failed += 1
-                    print(f"📝 [{idx}/{len(products)}] ❌ Ошибка создания товара {code_1c}")
+                    print(f"📝 [{idx}/{len(products)}] ❌ Ошибка создания товара {display_code}")
                 
                 # Выводим прогресс каждые 10 товаров
                 if idx % 10 == 0:
                     elapsed = time.time() - start_time
                     speed = idx / elapsed if elapsed > 0 else 0
                     remaining = (len(products) - idx) / speed if speed > 0 else 0
-                    print(f"📊 Прогресс: {idx}/{len(products)} | ✅ {success} | ⏭️  {skipped} | ❌ {failed} | Скорость: {speed:.1f} тов/сек | Осталось: ~{remaining/60:.1f} мин")
+                    print(f"📊 Прогресс: {idx}/{len(products)} | ✅ {success} | ❌ {failed} | Скорость: {speed:.1f} тов/сек | Осталось: ~{remaining/60:.1f} мин")
             
             elapsed_total = time.time() - start_time
-            print(f"\n🎉 Завершено! Создано: {success}, Пропущено: {skipped}, Ошибок: {failed}, Всего: {len(products)}")
+            print(f"\n🎉 Завершено! Создано: {success}, Ошибок: {failed}, Всего: {len(products)}")
             print(f"⏱️  Время выполнения: {elapsed_total/60:.1f} минут")
     
     except Exception as e:

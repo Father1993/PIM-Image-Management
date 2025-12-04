@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+
 PIM_API_URL = os.getenv("PRODUCT_BASE")
 PIM_LOGIN = os.getenv("LOGIN_TEST")
 PIM_PASSWORD = os.getenv("PASSWORD_TEST")
