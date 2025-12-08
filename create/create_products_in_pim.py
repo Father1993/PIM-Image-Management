@@ -367,11 +367,11 @@ async def main():
                 
                 if pim_id:
                     success += 1
-                    # Обновляем флаг push_to_pim в Supabase
+                    update_payload = {"push_to_pim": True, "pim_product_id": pim_id}
                     try:
-                        supabase.table("new_onec_products").update({"push_to_pim": True}).eq("id", product.get("id")).execute()
+                        supabase.table("new_onec_products").update(update_payload).eq("id", product.get("id")).execute()
                     except Exception as e:
-                        print(f"⚠️  Ошибка обновления флага для товара {display_code}: {e}")
+                        print(f"⚠️  Ошибка обновления данных для товара {display_code}: {e}")
                     
                     print(f"📝 [{idx}/{len(products)}] ✅ Товар {display_code} → PIM ID: {pim_id}")
                 else:
