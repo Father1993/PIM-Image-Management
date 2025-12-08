@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Скрипт для поиска товаров в PIM без назначенного признака матрицы.
-Сохраняет ID товаров в JSON файл.
+Сохраняет результаты в Excel файл.
 """
 
 import os
-import json
 import asyncio
 import aiohttp
+import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -18,7 +18,7 @@ PIM_API_URL = (os.getenv("PIM_API_URL") or "").rstrip("/")
 PIM_LOGIN = os.getenv("PIM_LOGIN")
 PIM_PASSWORD = os.getenv("PIM_PASSWORD")
 CATALOG_ID = int(os.getenv("PIM_CATALOG_ID", "22"))
-OUTPUT_FILE = f"products_without_matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+OUTPUT_FILE = f"products_without_matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
 
 async def get_pim_token(session):
@@ -32,18 +32,6 @@ async def get_pim_token(session):
         if not token:
             raise RuntimeError("Не удалось получить токен")
         return token
-
-
-def has_no_matrix(product):
-    """Проверить, есть ли у товара признак матрицы"""
-    product_group_id = product.get("productGroupId")
-    product_group = product.get("productGroup")
-    
-    # Проверяем оба поля: если productGroupId пустой/null И productGroup null
-    if product_group_id is None or product_group_id == "":
-        if product_group is None:
-            return True
-    return False
 
 
 async def find_products_without_matrix(session, token):
@@ -61,7 +49,7 @@ async def find_products_without_matrix(session, token):
         if scroll_id:
             params["scrollId"] = scroll_id
         
-        async with session.get(f"{PIM_API_URL}/product/scroll", headers=headers, params=params) as resp:
+        async with session.get(f"{PIM_API_URL}/product/scroll/", headers=headers, params=params) as resp:
             if resp.status != 200:
                 print(f"❌ Ошибка HTTP {resp.status} на странице {page}")
                 break
@@ -77,15 +65,13 @@ async def find_products_without_matrix(session, token):
             if not products:
                 break
             
-            # Фильтруем товары без признака матрицы
             for product in products:
-                if has_no_matrix(product):
+                product_group_id = product.get("productGroupId")
+                if (product_group_id is None or product_group_id == "") and product.get("productGroup") is None:
                     products_without_matrix.append({
-                        "id": product.get("id"),
-                        "header": product.get("header"),
-                        "articul": product.get("articul"),
-                        "productGroupId": product.get("productGroupId"),
-                        "productGroup": product.get("productGroup")
+                        "header": product.get("header", ""),
+                        "КОД_1С": product.get("articul", ""),
+                        "id": product.get("id")
                     })
             
             print(f"📄 Страница {page}: проверено {len(products)} товаров, найдено без матрицы: {len(products_without_matrix)}")
@@ -109,24 +95,11 @@ async def main():
             print("✅ Товаров без признака матрицы не найдено")
             return
         
-        # Сохраняем результат
-        result = {
-            "total": len(products),
-            "found_at": datetime.now().isoformat(),
-            "products": products
-        }
-        
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        df = pd.DataFrame(products)
+        df.to_excel(OUTPUT_FILE, index=False, engine="openpyxl")
         
         print(f"\n✅ Найдено {len(products)} товаров без признака матрицы")
         print(f"💾 Результаты сохранены в {OUTPUT_FILE}")
-        
-        # Выводим первые 10 ID для примера
-        if products:
-            print(f"\n📋 Примеры ID (первые 10):")
-            for p in products[:10]:
-                print(f"   - ID: {p['id']}, Название: {p.get('header', 'N/A')[:50]}")
 
 
 if __name__ == "__main__":
