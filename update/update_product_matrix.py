@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -51,16 +52,53 @@ def require_settings():
 def normalize(value):
     if not value:
         return None
-    return " ".join(value.strip().split()).lower()
+    return " ".join(str(value).strip().split()).lower()
+
+
+def find_matrix_match(value, matrix_map):
+    """Найти совпадение матрицы с учетом вариантов написания"""
+    if not value:
+        return None
+    
+    normalized = normalize(value)
+    
+    # Прямое совпадение
+    if normalized in matrix_map:
+        return matrix_map[normalized]
+    
+    # Убираем скобки и их содержимое для поиска
+    base_value = re.sub(r'\([^)]*\)', '', value).strip()
+    base_normalized = normalize(base_value)
+    
+    # Ищем совпадение по базовому значению
+    for key, data in matrix_map.items():
+        key_base = re.sub(r'\([^)]*\)', '', key).strip()
+        if normalize(key_base) == base_normalized:
+            return data
+    
+    return None
 
 
 def load_matrix_map(path):
+    """Загрузить маппинг матриц с учетом вариантов написания"""
     with open(path, "r", encoding="utf-8") as file:
         raw = json.load(file)
-    return {
-        normalize(name): {"id": data["id"], "header": data.get("header", name)}
-        for name, data in raw.items()
-    }
+    
+    matrix_map = {}
+    
+    # Добавляем все значения из JSON
+    for name, data in raw.items():
+        normalized = normalize(name)
+        matrix_map[normalized] = {"id": data["id"], "header": data.get("header", name)}
+        
+        # Добавляем вариант без скобок (если есть скобки)
+        if '(' in name:
+            base_name = re.sub(r'\([^)]*\)', '', name).strip()
+            base_normalized = normalize(base_name)
+            if base_normalized and base_normalized not in matrix_map:
+                matrix_map[base_normalized] = {"id": data["id"], "header": data.get("header", name)}
+    
+    return matrix_map
 
 
 async def get_pim_token(session):
@@ -137,19 +175,33 @@ def get_rows_to_update(client):
 def prepare_updates(rows, matrix_map):
     """Подготовить список обновлений: (supabase_id, pim_id, target_group_id)"""
     updates = []
+    unknown_matrices = set()
+    
     for row in rows:
-        raw_matrix = normalize(row.get("matrix"))
+        raw_matrix = row.get("matrix")
         pim_id_raw = row.get(PIM_ID_FIELD)
-        if not raw_matrix or raw_matrix not in matrix_map:
+        
+        if not raw_matrix:
             continue
         if not pim_id_raw:
             continue
+        
+        # Ищем совпадение с учетом вариантов написания
+        matrix_data = find_matrix_match(raw_matrix, matrix_map)
+        if not matrix_data:
+            unknown_matrices.add(raw_matrix)
+            continue
+        
         try:
             pim_id = int(pim_id_raw)
-            target_group_id = matrix_map[raw_matrix]["id"]
+            target_group_id = matrix_data["id"]
             updates.append((row["id"], pim_id, target_group_id))
         except (TypeError, ValueError):
             continue
+    
+    if unknown_matrices:
+        print(f"⚠️  Найдены неизвестные значения матрицы ({len(unknown_matrices)}): {', '.join(sorted(unknown_matrices)[:10])}")
+    
     return updates
 
 
