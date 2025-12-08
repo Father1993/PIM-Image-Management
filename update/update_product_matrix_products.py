@@ -206,6 +206,7 @@ async def main():
         stats = {"updated": 0, "already_ok": 0, "errors": 0}
         updated_ids = []
         successfully_updated_pim_ids = []
+        id_mapping = {supabase_id: pim_id for supabase_id, pim_id, _ in updates}
         
         print(f"📥 Обработка {len(updates)} товаров (параллельно {CONCURRENT})...")
         tasks = [
@@ -220,11 +221,7 @@ async def main():
                 if status == "updated":
                     stats["updated"] += 1
                     updated_ids.append(result["id"])
-                    # Находим PIM ID для этого товара
-                    for supabase_id, pim_id, _ in updates:
-                        if supabase_id == result["id"]:
-                            successfully_updated_pim_ids.append(pim_id)
-                            break
+                    successfully_updated_pim_ids.append(id_mapping.get(result["id"]))
                 elif status == "already_ok":
                     stats["already_ok"] += 1
                     updated_ids.append(result["id"])
@@ -245,6 +242,10 @@ async def main():
         f"\nГотово. Обновлено: {stats['updated']}, уже правильные: {stats['already_ok']}, "
         f"ошибок: {stats['errors']}"
     )
+    
+    if successfully_updated_pim_ids:
+        print(f"\n📋 Успешно обновленные PIM ID ({len(successfully_updated_pim_ids)} товаров):")
+        print(",".join(map(str, successfully_updated_pim_ids)))
 
 
 if __name__ == "__main__":
