@@ -25,37 +25,22 @@ def main():
         
         print("📥 Поиск товаров без значения matrix...")
         
-        # Загружаем товары батчами, так как Supabase может ограничивать количество записей
-        products_without_matrix = []
-        offset = 0
-        limit = 1000
+        response = (
+            supabase.table("products")
+            .select("id, product_name, article, code_1c")
+            .is_("matrix", "null")
+            .execute()
+        )
         
-        while True:
-            response = (
-                supabase.table("products")
-                .select("id, product_name, articul, code_1c")
-                .is_("matrix", "null")
-                .range(offset, offset + limit - 1)
-                .execute()
-            )
-            
-            batch = response.data or []
-            if not batch:
-                break
-            
-            for product in batch:
-                products_without_matrix.append({
-                    "header": product.get("product_name", ""),
-                    "КОД_1С": product.get("code_1c") or product.get("articul", ""),
-                    "id": product.get("id")
-                })
-            
-            print(f"📄 Загружено: {len(products_without_matrix)} товаров...")
-            
-            if len(batch) < limit:
-                break
-            
-            offset += limit
+        products = response.data or []
+        
+        products_without_matrix = []
+        for product in products:
+            products_without_matrix.append({
+                "header": product.get("product_name", ""),
+                "КОД_1С": product.get("code_1c") or product.get("article", ""),
+                "id": product.get("id")
+            })
         
         if not products_without_matrix:
             print("✅ Товаров без значения matrix не найдено")
