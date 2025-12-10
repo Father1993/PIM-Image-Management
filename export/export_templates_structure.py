@@ -42,7 +42,7 @@ async def api_call(client: httpx.AsyncClient, method: str, path: str, **kwargs):
 
 async def fetch_token(client: httpx.AsyncClient) -> str:
     payload = {"login": LOGIN, "password": PASSWORD, "remember": True}
-    for path in ("/sign-in/", "/api/v1/sign-in/"):
+    for path in ("/sign-in/", "/sign-in/"):
         try:
             data = await api_call(client, "POST", path, json=payload)
             token = data.get("access", {}).get("token")
@@ -54,7 +54,7 @@ async def fetch_token(client: httpx.AsyncClient) -> str:
 
 
 async def fetch_template_ids(client: httpx.AsyncClient) -> list[int]:
-    data = await api_call(client, "GET", f"/api/v1/template/autocomplete/{TEMPLATE_LIMIT}")
+    data = await api_call(client, "GET", f"/template/autocomplete/{TEMPLATE_LIMIT}")
     raw_items = data if isinstance(data, list) else data.get("items") or data.get("templates") or []
     ids = sorted({int(item.get("id")) for item in raw_items if item.get("id")})
     if not ids:
@@ -70,7 +70,7 @@ async def fetch_templates(client: httpx.AsyncClient, template_ids: list[int]) ->
     async def fetch_one(tid: int):
         async with semaphore:
             try:
-                data = await api_call(client, "GET", f"/api/v1/template/{tid}")
+                data = await api_call(client, "GET", f"/template/{tid}")
                 print(f"✅ Шаблон {tid} загружен")
                 return data
             except Exception as exc:  # noqa: BLE001
@@ -109,7 +109,7 @@ async def fetch_feature_values(client: httpx.AsyncClient, value_ids: set[int]) -
     async def fetch_one(value_id: int):
         async with semaphore:
             try:
-                data = await api_call(client, "GET", f"/api/v1/feature-value/{value_id}")
+                data = await api_call(client, "GET", f"/feature-value/{value_id}")
                 cache[value_id] = {
                     "id": data.get("id"),
                     "value": data.get("value") or data.get("header"),
