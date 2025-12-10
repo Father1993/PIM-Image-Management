@@ -19,6 +19,6 @@ data/__pycache__/
 !.vscode/launch.json
 !.vscode/extensions.json
 *.code-workspace
-products_images.json
-struktura.json
-categories_export.json
+
+# JSON файлы
+/data/**/*.json
