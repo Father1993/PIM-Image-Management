@@ -1,0 +1,47 @@
+[   
+    {
+        "id": 6,
+        "header": "В каталоге",
+        "icon": null,
+        "enabled": true,
+        "deleted": false,
+        "createdAt": "2025-10-29T08:19:16.677+00:00",
+        "syncUid": "2be37624-2e92-419b-8256-a00397a309f3"
+    },
+    {
+        "id": 7,
+        "header": "Шаблон заполнен",
+        "icon": null,
+        "enabled": true,
+        "deleted": false,
+        "createdAt": "2025-12-09T06:36:20.450+00:00",
+        "syncUid": "655de686-d959-45ee-820d-7adfd8a2f732"
+    },
+    {
+        "id": 8,
+        "header": "Шаблон назначен",
+        "icon": null,
+        "enabled": true,
+        "deleted": false,
+        "createdAt": "2025-12-09T06:38:24.043+00:00",
+        "syncUid": "9e2b5b4f-d388-4fa8-bd54-1e5eb1350608"
+    },
+    {
+        "id": 9,
+        "header": "Главное фото",
+        "icon": "",
+        "enabled": true,
+        "deleted": false,
+        "createdAt": "2025-12-09T06:42:04.832+00:00",
+        "syncUid": "fb86becc-01c3-41c6-8fa2-90fc2ed42c11"
+    },
+    {
+        "id": 10,
+        "header": "Дополнительные фото ",
+        "icon": null,
+        "enabled": true,
+        "deleted": false,
+        "createdAt": "2025-12-09T06:42:19.990+00:00",
+        "syncUid": "5f9eacaf-afac-4b1b-8e92-46cafc21c551"
+    }
+]
