@@ -21,4 +21,4 @@ data/__pycache__/
 *.code-workspace
 
 # JSON файлы
-data/*.json
+/data/**/*.json
