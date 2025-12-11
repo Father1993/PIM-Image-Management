@@ -5,6 +5,35 @@ from __future__ import annotations
 """
 Экспорт иерархии шаблонов PIM: шаблон -> группы -> характеристики -> значения.
 Результат: templates_structure.json с плоским, легко переносимым описанием.
+
+Структура выходного файла:
+{
+  "generated_at": "ISO 8601 UTC время",
+  "template_count": число,
+  "templates": [
+    {
+      "id": ID шаблона,
+      "header": "Название",
+      "groups": [
+        {
+          "id": ID группы,
+          "header": "Название группы",
+          "features": [
+            {
+              "id": ID характеристики,
+              "featureId": ID базовой характеристики,
+              "header": "Название",
+              "type": {"code": "string|range|select|boolean", ...},
+              "values": [{"id": ..., "value": "..."}]  # только для select
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+Подробная документация: data/templates_structure.README.md
 """
 
 import asyncio
@@ -20,7 +49,7 @@ load_dotenv()
 BASE_URL = os.getenv("PIM_API_URL", "").rstrip("/")
 LOGIN = os.getenv("PIM_LOGIN")
 PASSWORD = os.getenv("PIM_PASSWORD")
-OUTPUT_FILE = os.getenv("PIM_TEMPLATE_OUTPUT", "templates_structure.json")
+OUTPUT_FILE = os.getenv("PIM_TEMPLATE_OUTPUT", "data/templates_structure.json")
 TEMPLATE_LIMIT = int(os.getenv("PIM_TEMPLATE_LIMIT", "20000"))
 HTTP_TIMEOUT = float(os.getenv("PIM_HTTP_TIMEOUT", 30))
 HTTP_LIMITS = httpx.Limits(max_connections=40, max_keepalive_connections=20)
@@ -42,14 +71,13 @@ async def api_call(client: httpx.AsyncClient, method: str, path: str, **kwargs):
 
 async def fetch_token(client: httpx.AsyncClient) -> str:
     payload = {"login": LOGIN, "password": PASSWORD, "remember": True}
-    for path in ("/sign-in/", "/sign-in/"):
-        try:
-            data = await api_call(client, "POST", path, json=payload)
-            token = data.get("access", {}).get("token")
-            if token:
-                return token
-        except httpx.HTTPError:
-            continue
+    try:
+        data = await api_call(client, "POST", "/sign-in/", json=payload)
+        token = data.get("access", {}).get("token")
+        if token:
+            return token
+    except httpx.HTTPError:
+        pass
     raise RuntimeError("Авторизация в PIM не удалась")
 
 
@@ -195,6 +223,7 @@ def simplify_templates(templates: list[dict], value_map: dict[int, dict]) -> dic
 
 
 def save_payload(payload: dict) -> None:
+    os.makedirs(os.path.dirname(OUTPUT_FILE) or ".", exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
     print(f"💾 Структура сохранена в {OUTPUT_FILE}")
