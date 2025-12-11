@@ -22,3 +22,4 @@ data/__pycache__/
 
 # JSON файлы
 /data/**/*.json
+/.docs/templates_structure.README.md
