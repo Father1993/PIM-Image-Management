@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Асинхронно обновляет поле link_pim для товаров с флагом is_new_product = true.
+Проверяет и добавляет недостающие ссылки на PIM для товаров.
 """
 
 import asyncio
@@ -30,19 +30,14 @@ def build_headers():
     }
 
 
-async def fetch_product_ids(session):
-    """Получить все ID товаров для обновления"""
+async def fetch_products_without_link(session):
+    """Получить ID товаров без ссылок (NULL или пустая строка)"""
     ids = []
     offset = 0
     
     while True:
-        params = {
-            "select": "id",
-            "is_new_product": "eq.true",
-            "limit": PAGE_SIZE,
-            "offset": offset
-        }
-        async with session.get(REST_URL, params=params, headers=build_headers()) as resp:
+        url = f"{REST_URL}?select=id&or=(link_pim.is.null,link_pim.eq.)&limit={PAGE_SIZE}&offset={offset}"
+        async with session.get(url, headers=build_headers()) as resp:
             if resp.status == 416:
                 break
             if resp.status != 200:
@@ -59,7 +54,7 @@ async def fetch_product_ids(session):
 
 
 async def update_product(session, semaphore, product_id):
-    """Обновить один товар"""
+    """Обновить ссылку для одного товара"""
     async with semaphore:
         link_pim = f"{PIM_BASE_URL}/{product_id}"
         params = {"id": f"eq.{product_id}"}
@@ -79,16 +74,16 @@ async def main():
     
     timeout = aiohttp.ClientTimeout(total=None)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        print("📥 Загрузка ID товаров...")
-        product_ids = await fetch_product_ids(session)
+        print("🔍 Проверка товаров без ссылок...")
+        product_ids = await fetch_products_without_link(session)
         
         if not product_ids:
-            print("✅ Нет товаров для обновления")
+            print("✅ Все товары имеют ссылки на PIM")
             return
         
-        print(f"✅ Найдено товаров: {len(product_ids)}\n")
+        print(f"📊 Найдено товаров без ссылок: {len(product_ids)}\n")
         
-        print(f"🚀 Обновление (параллельно {CONCURRENCY})...")
+        print(f"🚀 Добавление ссылок (параллельно {CONCURRENCY})...")
         semaphore = asyncio.Semaphore(CONCURRENCY)
         tasks = [update_product(session, semaphore, pid) for pid in product_ids]
         
@@ -111,3 +106,4 @@ if __name__ == "__main__":
         print(f"❌ Ошибка: {exc}")
         import traceback
         traceback.print_exc()
+
