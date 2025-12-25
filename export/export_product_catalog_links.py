@@ -8,11 +8,16 @@
 import asyncio
 import json
 import os
+import sys
 from datetime import datetime
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+
+# Устанавливаем UTF-8 для Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 load_dotenv()
 

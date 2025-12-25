@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Связывание товаров из Supabase с каталогами PIM.
-Простое и изящное решение без изменения таблицы products.
+Связывание товаров с каталогами.
+Прямая связь: products.id = PIM product.id
 """
 
 import json
 import os
 import sys
-from datetime import datetime
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Устанавливаем UTF-8 для Windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -79,47 +77,39 @@ def main():
     
     print(f"✅ Загружено {len(catalogs_sorted)} каталогов\n")
     
-    # 3. Получаем товары из БД
+    # 3. Получаем ID товаров из БД
     print("📦 Получение товаров из БД...")
-    products_result = supabase.table("products").select("id, code_1c").execute()
-    code_to_db_id = {p["code_1c"]: p["id"] for p in products_result.data if p.get("code_1c")}
-    print(f"✅ Найдено {len(code_to_db_id)} товаров с code_1c\n")
+    products_result = supabase.table("products").select("id").execute()
+    existing_product_ids = {p["id"] for p in products_result.data}
+    print(f"✅ Найдено {len(existing_product_ids)} товаров\n")
     
-    # 4. Загружаем данные связей из PIM
-    print("📥 Загрузка данных связей из PIM...")
+    # 4. Загружаем связи из PIM
+    print("📥 Загрузка связей из PIM...")
     links_data = load_json(LINKS_JSON)
-    pim_products = links_data["products"]
     links = links_data["links"]
+    print(f"✅ Обработано {len(links)} связей из PIM\n")
     
-    # Создаем карту: PIM ID -> articul
-    pim_id_to_articul = {p["id"]: p["articul"] for p in pim_products if p.get("articul")}
-    print(f"✅ Обработано {len(pim_id_to_articul)} товаров из PIM\n")
-    
-    # 5. Создаем связи
+    # 5. Создаем связи (products.id = PIM product.id)
     print("🔗 Создание связей товары ↔ каталоги...")
     product_catalogs = []
-    not_found = 0
+    skipped = 0
     
     for link in links:
-        pim_product_id = link["product_id"]
-        articul = pim_id_to_articul.get(pim_product_id)
+        product_id = link["product_id"]  # ID из PIM
         
-        if articul:
-            db_product_id = code_to_db_id.get(articul)
-            if db_product_id:
-                product_catalogs.append({
-                    "product_id": db_product_id,
-                    "catalog_id": link["catalog_id"],
-                    "is_primary": link["is_primary"],
-                    "sort_order": link["sort_order"],
-                })
-            else:
-                not_found += 1
+        # Проверяем, есть ли товар в БД
+        if product_id in existing_product_ids:
+            product_catalogs.append({
+                "product_id": product_id,
+                "catalog_id": link["catalog_id"],
+                "is_primary": link["is_primary"],
+                "sort_order": link["sort_order"],
+            })
         else:
-            not_found += 1
+            skipped += 1
     
     print(f"   • Создано связей: {len(product_catalogs)}")
-    print(f"   • Не найдено в БД: {not_found}\n")
+    print(f"   • Пропущено (товар не в БД): {skipped}\n")
     
     # 6. Загружаем связи батчами
     print("💾 Загрузка связей в БД...")
