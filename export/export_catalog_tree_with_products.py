@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any
 
 import httpx
@@ -88,6 +88,13 @@ def find_catalog_by_id(tree: list[dict], catalog_id: int) -> dict | None:
     return None
 
 
+async def fetch_catalog_info(client: httpx.AsyncClient, catalog_id: int) -> dict:
+    """Получение информации о каталоге."""
+    print(f"📥 Получение информации о каталоге {catalog_id}...")
+    data = await api_call(client, "GET", f"/api/v1/catalog/{catalog_id}")
+    return data
+
+
 async def fetch_product_ids(client: httpx.AsyncClient) -> list[int]:
     """Получение всех ID товаров через scroll API."""
     print("📥 Получение списка товаров...")
@@ -121,16 +128,26 @@ async def fetch_product_ids(client: httpx.AsyncClient) -> list[int]:
         if not scroll_id:
             break
     
-    print(f"✅ Найдено {len(ids)} товаров в каталоге {CATALOG_ID}")
+    print(f"✅ Найдено {len(ids)} товаров через scroll API")
     return sorted(ids)
 
 
-async def fetch_product_data(client: httpx.AsyncClient, product_ids: list[int]) -> dict[int, dict]:
-    """Получение данных товаров с их привязками к каталогам."""
+async def fetch_product_data(
+    client: httpx.AsyncClient, 
+    product_ids: list[int],
+    max_retries: int = 3
+) -> tuple[dict[int, dict], list[int]]:
+    """
+    Получение данных товаров с их привязками к каталогам.
+    
+    Returns:
+        tuple[products, failed_ids] - словарь товаров и список ID с ошибками
+    """
     semaphore = asyncio.Semaphore(CONCURRENCY)
     products: dict[int, dict] = {}
+    failed_ids: list[int] = []
     
-    async def fetch_one(pid: int):
+    async def fetch_one(pid: int, retry: int = 0):
         async with semaphore:
             try:
                 data = await api_call(client, "GET", f"/api/v1/product/{pid}")
@@ -164,12 +181,19 @@ async def fetch_product_data(client: httpx.AsyncClient, product_ids: list[int]) 
                     print(f"✅ Обработано {len(products)}/{len(product_ids)} товаров")
                 
             except Exception as exc:
-                print(f"❌ Ошибка товара {pid}: {exc}")
+                if retry < max_retries:
+                    wait_time = 2 ** retry  # Exponential backoff: 1s, 2s, 4s
+                    print(f"⚠️  Ошибка товара {pid} (попытка {retry + 1}/{max_retries + 1}): {exc}")
+                    await asyncio.sleep(wait_time)
+                    await fetch_one(pid, retry + 1)
+                else:
+                    print(f"❌ Ошибка товара {pid} после {max_retries + 1} попыток: {exc}")
+                    failed_ids.append(pid)
     
     print(f"\n📥 Получение данных {len(product_ids)} товаров...")
     await asyncio.gather(*(fetch_one(pid) for pid in product_ids))
     
-    return products
+    return products, failed_ids
 
 
 def build_catalog_tree_with_products(
@@ -259,14 +283,17 @@ def calculate_statistics(tree: dict, products: dict[int, dict]) -> dict:
     }
 
 
-def save_payload(tree: dict, products: dict[int, dict]) -> None:
+def save_payload(tree: dict, products: dict[int, dict], failed_ids: list[int] = None) -> None:
     """Сохранение результата в JSON файл."""
     os.makedirs(os.path.dirname(OUTPUT_FILE) or ".", exist_ok=True)
     
     statistics = calculate_statistics(tree, products)
+    if failed_ids:
+        statistics["failed_products"] = len(failed_ids)
+        statistics["failed_product_ids"] = failed_ids
     
     payload = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
         "source": "COMPO PIM API",
         "catalog_id": CATALOG_ID,
         "statistics": statistics,
@@ -282,6 +309,8 @@ def save_payload(tree: dict, products: dict[int, dict]) -> None:
     print(f"   • Каталогов с товарами: {statistics['catalogs_with_products']}")
     print(f"   • Конечных каталогов: {statistics['leaf_catalogs']}")
     print(f"   • Всего товаров: {statistics['total_products']}")
+    if failed_ids:
+        print(f"   • Ошибок при получении: {statistics['failed_products']}")
 
 
 async def main():
@@ -297,6 +326,13 @@ async def main():
         token = await fetch_token(client)
         client.headers["Authorization"] = f"Bearer {token}"
         
+        # Получаем информацию о каталоге
+        catalog_info = await fetch_catalog_info(client, CATALOG_ID)
+        print(f"✅ Каталог: {catalog_info.get('header')}")
+        print(f"   • productCountPim: {catalog_info.get('productCountPim', 0)}")
+        print(f"   • productCountPimAdditional: {catalog_info.get('productCountPimAdditional', 0)}")
+        print(f"   • Всего по счетчику: {catalog_info.get('productCountPim', 0) + catalog_info.get('productCountPimAdditional', 0)}")
+        
         # Получаем дерево каталогов
         catalog_tree = await fetch_catalog_tree(client)
         print(f"✅ Получено дерево каталогов")
@@ -304,16 +340,36 @@ async def main():
         # Получаем товары
         product_ids = await fetch_product_ids(client)
         
+        # Сравниваем со счетчиком
+        expected_total = catalog_info.get('productCountPim', 0) + catalog_info.get('productCountPimAdditional', 0)
+        if len(product_ids) != expected_total:
+            print(f"⚠️  ВНИМАНИЕ: Расхождение в количестве!")
+            print(f"   • Получено через scroll: {len(product_ids)}")
+            print(f"   • Ожидалось по счетчику: {expected_total}")
+            print(f"   • Разница: {expected_total - len(product_ids)}")
+        
         # Получаем данные товаров
-        products = await fetch_product_data(client, product_ids)
-        print(f"✅ Получено данных о {len(products)} товарах")
+        products, failed_ids = await fetch_product_data(client, product_ids)
+        print(f"\n✅ Получено данных о {len(products)} товарах")
+        
+        # Проверяем статистику по enabled/deleted
+        enabled_count = sum(1 for p in products.values() if p.get('enabled'))
+        disabled_count = sum(1 for p in products.values() if not p.get('enabled'))
+        deleted_count = sum(1 for p in products.values() if p.get('deleted'))
+        print(f"   • Активных: {enabled_count}")
+        print(f"   • Неактивных: {disabled_count}")
+        print(f"   • Удаленных: {deleted_count}")
+        
+        if failed_ids:
+            print(f"\n⚠️  Не удалось получить данные для {len(failed_ids)} товаров:")
+            print(f"   ID: {failed_ids}")
         
         # Строим дерево с товарами
         tree = build_catalog_tree_with_products(catalog_tree, products, CATALOG_ID)
         print(f"✅ Построено дерево каталога с товарами")
         
         # Сохраняем результат
-        save_payload(tree, products)
+        save_payload(tree, products, failed_ids)
 
 
 if __name__ == "__main__":
