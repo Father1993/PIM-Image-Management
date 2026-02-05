@@ -33,7 +33,6 @@ from __future__ import annotations
   ]
 }
 
-Подробная документация: data/templates_structure.README.md
 """
 
 import asyncio
