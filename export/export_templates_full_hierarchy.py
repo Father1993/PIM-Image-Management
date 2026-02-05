@@ -1,44 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Экспорт полной иерархии шаблонов из PIM:
+шаблон -> группа шаблонов (с родителями) -> группы характеристик -> характеристики -> значения.
+
+Результат: data/templates_full_hierarchy.json
+"""
+
 from __future__ import annotations
-
-"""
-Экспорт иерархии шаблонов PIM: шаблон -> группы -> характеристики -> значения.
-Результат: templates_structure.json с плоским, легко переносимым описанием.
-
-Структура выходного файла:
-{
-  "generated_at": "ISO 8601 UTC время",
-  "template_count": число,
-  "templates": [
-    {
-      "id": ID шаблона,
-      "header": "Название",
-      "groups": [
-        {
-          "id": ID группы,
-          "header": "Название группы",
-          "features": [
-            {
-              "id": ID характеристики,
-              "featureId": ID базовой характеристики,
-              "header": "Название",
-              "type": {"code": "string|range|select|boolean", ...},
-              "values": [{"id": ..., "value": "..."}]  # только для select
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-
-"""
 
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -48,7 +22,7 @@ load_dotenv()
 BASE_URL = os.getenv("PIM_API_URL", "").rstrip("/")
 LOGIN = os.getenv("PIM_LOGIN")
 PASSWORD = os.getenv("PIM_PASSWORD")
-OUTPUT_FILE = os.getenv("PIM_TEMPLATE_OUTPUT", "data/templates_structure.json")
+OUTPUT_FILE = os.getenv("PIM_TEMPLATE_FULL_OUTPUT", "data/templates_full_hierarchy.json")
 TEMPLATE_LIMIT = int(os.getenv("PIM_TEMPLATE_LIMIT", "20000"))
 HTTP_TIMEOUT = float(os.getenv("PIM_HTTP_TIMEOUT", 30))
 HTTP_LIMITS = httpx.Limits(max_connections=40, max_keepalive_connections=20)
@@ -70,20 +44,35 @@ async def api_call(client: httpx.AsyncClient, method: str, path: str, **kwargs):
 
 async def fetch_token(client: httpx.AsyncClient) -> str:
     payload = {"login": LOGIN, "password": PASSWORD, "remember": True}
-    try:
-        data = await api_call(client, "POST", "/sign-in/", json=payload)
-        token = data.get("access", {}).get("token")
-        if token:
-            return token
-    except httpx.HTTPError:
-        pass
+    for path in ("/sign-in/", "/api/v1/sign-in/"):
+        try:
+            data = await api_call(client, "POST", path, json=payload)
+            token = data.get("access", {}).get("token")
+            if token:
+                return token
+        except httpx.HTTPError:
+            continue
     raise RuntimeError("Авторизация в PIM не удалась")
+
+
+def load_template_ids_from_file(path: str = "ID-temp.json") -> list[int] | None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            ids = [int(item["id"]) for item in data if isinstance(item, dict) and item.get("id")]
+            return sorted(set(ids))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    return None
 
 
 async def fetch_template_ids(client: httpx.AsyncClient) -> list[int]:
     data = await api_call(client, "GET", f"/template/autocomplete/{TEMPLATE_LIMIT}")
-    raw_items = data if isinstance(data, list) else data.get("items") or data.get("templates") or []
-    ids = sorted({int(item.get("id")) for item in raw_items if item.get("id")})
+    items = data if isinstance(data, list) else data.get("items") or data.get("templates") or []
+    ids = sorted({int(item.get("id")) for item in items if item.get("id")})
     if not ids:
         raise RuntimeError("PIM не вернул список шаблонов")
     print(f"📋 Найдено {len(ids)} шаблонов для выгрузки")
@@ -154,7 +143,81 @@ async def fetch_feature_values(client: httpx.AsyncClient, value_ids: set[int]) -
     return cache
 
 
-def simplify_templates(templates: list[dict], value_map: dict[int, dict]) -> dict:
+async def fetch_template_groups(client: httpx.AsyncClient, group_ids: set[int]) -> dict[int, dict]:
+    if not group_ids:
+        return {}
+    semaphore = asyncio.Semaphore(30)
+    groups_map: dict[int, dict] = {}
+    all_group_ids = set(group_ids)
+
+    async def fetch_one(gid: int):
+        async with semaphore:
+            try:
+                data = await api_call(client, "GET", f"/template-group/{gid}")
+                group = {
+                    "id": data.get("id"),
+                    "header": data.get("header"),
+                    "parentId": data.get("parentId"),
+                }
+                groups_map[gid] = group
+                parent_id = group.get("parentId")
+                if parent_id and parent_id not in all_group_ids:
+                    all_group_ids.add(parent_id)
+            except Exception:
+                return
+
+    await asyncio.gather(*(fetch_one(gid) for gid in group_ids))
+    missing_parents = all_group_ids - set(groups_map.keys())
+    while missing_parents:
+        await asyncio.gather(*(fetch_one(gid) for gid in missing_parents))
+        missing_parents = all_group_ids - set(groups_map.keys())
+
+    return groups_map
+
+
+async def fetch_feature_groups(client: httpx.AsyncClient, group_ids: set[int]) -> dict[int, dict]:
+    if not group_ids:
+        return {}
+    semaphore = asyncio.Semaphore(50)
+    cache: dict[int, dict] = {}
+
+    async def fetch_one(gid: int):
+        async with semaphore:
+            try:
+                data = await api_call(client, "GET", f"/feature-group/{gid}")
+                cache[gid] = {
+                    "id": data.get("id"),
+                    "header": data.get("header"),
+                    "pos": data.get("pos"),
+                    "enabled": data.get("enabled"),
+                    "isSystem": data.get("isSystem"),
+                    "deleted": data.get("deleted"),
+                }
+            except Exception:
+                return
+
+    await asyncio.gather(*(fetch_one(gid) for gid in group_ids))
+    return cache
+
+
+def build_group_tree(group_id: int | None, group_map: dict[int, dict]) -> list[dict]:
+    if not group_id or group_id not in group_map:
+        return []
+    tree: list[dict] = []
+    current = group_map.get(group_id)
+    while current:
+        tree.append({"id": current.get("id"), "header": current.get("header")})
+        parent_id = current.get("parentId")
+        current = group_map.get(parent_id) if parent_id else None
+    return list(reversed(tree))
+
+
+def simplify_templates(
+    templates: list[dict],
+    value_map: dict[int, dict],
+    template_group_map: dict[int, dict],
+    feature_group_map: dict[int, dict],
+) -> dict:
     simplified: list[dict] = []
     for tpl in templates:
         groups_out: list[dict] = []
@@ -166,6 +229,7 @@ def simplify_templates(templates: list[dict], value_map: dict[int, dict]) -> dic
                     vid = raw_value.get("id") if isinstance(raw_value, dict) else raw_value
                     if isinstance(vid, int):
                         values.append(value_map.get(vid) or {"id": vid, "value": None})
+                feature_group_id = feature.get("featureGroupId")
                 features_out.append(
                     {
                         "id": feature.get("id"),
@@ -183,26 +247,32 @@ def simplify_templates(templates: list[dict], value_map: dict[int, dict]) -> dic
                         "units": feature.get("units") or [],
                         "validatorId": feature.get("validatorId"),
                         "sort": feature.get("sort"),
-                        "featureGroupId": feature.get("featureGroupId"),
+                        "featureGroupId": feature_group_id,
+                        "featureGroup": feature_group_map.get(feature_group_id),
                         "values": values,
                     }
                 )
+            group_base_id = group.get("groupId")
             groups_out.append(
                 {
                     "id": group.get("id"),
                     "header": group.get("header"),
-                    "groupId": group.get("groupId"),
+                    "groupId": group_base_id,
                     "templateId": group.get("templateId"),
                     "sort": group.get("sort"),
+                    "featureGroup": feature_group_map.get(group_base_id),
                     "features": features_out,
                 }
             )
+
+        template_group_id = tpl.get("templateGroupId")
         simplified.append(
             {
                 "id": tpl.get("id"),
                 "header": tpl.get("header"),
-                "templateGroupId": tpl.get("templateGroupId"),
-                "templateGroupTree": tpl.get("templateGroupTree") or [],
+                "templateGroupId": template_group_id,
+                "templateGroup": template_group_map.get(template_group_id),
+                "templateGroupTree": build_group_tree(template_group_id, template_group_map),
                 "cases": tpl.get("cases"),
                 "syncUid": tpl.get("syncUid"),
                 "featureCount": tpl.get("featureCount"),
@@ -215,7 +285,7 @@ def simplify_templates(templates: list[dict], value_map: dict[int, dict]) -> dic
         )
     simplified.sort(key=lambda item: item["id"])
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "template_count": len(simplified),
         "templates": simplified,
     }
@@ -238,14 +308,37 @@ async def main():
     ) as client:
         token = await fetch_token(client)
         client.headers["Authorization"] = f"Bearer {token}"
-        template_ids = await fetch_template_ids(client)
+
+        template_ids = load_template_ids_from_file()
+        if template_ids:
+            print(f"📋 Найдено {len(template_ids)} шаблонов в ID-temp.json")
+        else:
+            template_ids = await fetch_template_ids(client)
+
         templates_raw = await fetch_templates(client, template_ids)
         value_ids = collect_feature_value_ids(templates_raw)
         value_map = await fetch_feature_values(client, value_ids)
-        payload = simplify_templates(templates_raw, value_map)
+
+        template_group_ids = {
+            tpl.get("templateGroupId")
+            for tpl in templates_raw
+            if tpl.get("templateGroupId")
+        }
+        template_group_map = await fetch_template_groups(client, template_group_ids)
+
+        feature_group_ids: set[int] = set()
+        for tpl in templates_raw:
+            for group in tpl.get("groups") or []:
+                if group.get("groupId"):
+                    feature_group_ids.add(group.get("groupId"))
+                for feature in group.get("features") or []:
+                    if feature.get("featureGroupId"):
+                        feature_group_ids.add(feature.get("featureGroupId"))
+
+        feature_group_map = await fetch_feature_groups(client, feature_group_ids)
+        payload = simplify_templates(templates_raw, value_map, template_group_map, feature_group_map)
         save_payload(payload)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
